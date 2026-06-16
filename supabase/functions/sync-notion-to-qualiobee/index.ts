@@ -184,11 +184,14 @@ async function findOrCreateTrainer(orgUuid: string, apiKey: string, name: string
   // Créer le formateur s'il n'existe pas dans Qualiobee
   const parts = name.trim().split(/\s+/)
   const lastName = parts[parts.length - 1]
-  const firstName = parts.slice(0, -1).join(' ')
+  const firstName = parts.length > 1 ? parts.slice(0, -1).join(' ') : lastName
+  const slug = name.toLowerCase().replace(/\s+/g, '-')
   return qb(`/api/${orgUuid}/trainer`, apiKey, 'POST', {
     firstName,
     lastName,
-    externalId: `notion-trainer-${name.toLowerCase().replace(/\s+/g, '-')}`,
+    email: `${slug}@digit-formations.fr`,
+    description: 'Formateur',
+    externalId: `notion-trainer-${slug}`,
     isExternal: true,
   })
 }
