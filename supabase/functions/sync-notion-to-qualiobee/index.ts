@@ -224,21 +224,27 @@ function buildSessionDates(
   }> = []
 
   if (type === 'IA') {
-    const elearningEnd = new Date(startDate)
+    // Elearning du début jusqu'à la veille du présentiel (endDate)
+    const elearningEnd = new Date(endDate)
     elearningEnd.setDate(elearningEnd.getDate() - 1)
-    dates.push({ type: 'elearning', startAt: fmt(startDate), endAt: fmt(elearningEnd), elearningHours: 14 })
-    dates.push({ type: presenceType, startAt: fmt(withTime(startDate, 9, 0)), endAt: fmt(withTime(startDate, 12, 30)) })
-    dates.push({ type: presenceType, startAt: fmt(withTime(startDate, 13, 30)), endAt: fmt(withTime(startDate, 17, 0)) })
+    const safeElearningEnd = elearningEnd >= startDate ? elearningEnd : new Date(startDate)
+    dates.push({ type: 'elearning', startAt: fmt(startDate), endAt: fmt(safeElearningEnd), elearningHours: 14 })
+    // Présentiel sur endDate
+    dates.push({ type: presenceType, startAt: fmt(withTime(endDate, 9, 0)), endAt: fmt(withTime(endDate, 12, 30)) })
+    dates.push({ type: presenceType, startAt: fmt(withTime(endDate, 13, 30)), endAt: fmt(withTime(endDate, 17, 0)) })
   }
 
   if (type === 'RS') {
-    const elearningEnd = new Date(startDate)
+    // Elearning du début jusqu'à la veille du présentiel (endDate)
+    const elearningEnd = new Date(endDate)
     elearningEnd.setDate(elearningEnd.getDate() - 1)
-    dates.push({ type: 'elearning', startAt: fmt(startDate), endAt: fmt(elearningEnd), elearningHours: 10 })
-    dates.push({ type: presenceType, startAt: fmt(withTime(startDate, 9, 0)), endAt: fmt(withTime(startDate, 12, 30)) })
-    dates.push({ type: presenceType, startAt: fmt(withTime(startDate, 13, 30)), endAt: fmt(withTime(startDate, 17, 0)) })
-    // Suivi visio 1h (lendemain de la formation)
-    const suiviDay = new Date(startDate)
+    const safeElearningEnd = elearningEnd >= startDate ? elearningEnd : new Date(startDate)
+    dates.push({ type: 'elearning', startAt: fmt(startDate), endAt: fmt(safeElearningEnd), elearningHours: 10 })
+    // Présentiel sur endDate
+    dates.push({ type: presenceType, startAt: fmt(withTime(endDate, 9, 0)), endAt: fmt(withTime(endDate, 12, 30)) })
+    dates.push({ type: presenceType, startAt: fmt(withTime(endDate, 13, 30)), endAt: fmt(withTime(endDate, 17, 0)) })
+    // Suivi visio 1h (lendemain du présentiel)
+    const suiviDay = new Date(endDate)
     suiviDay.setDate(suiviDay.getDate() + 1)
     dates.push({ type: 'remote', startAt: fmt(withTime(suiviDay, 10, 0)), endAt: fmt(withTime(suiviDay, 11, 0)) })
   }
