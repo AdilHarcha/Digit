@@ -286,7 +286,8 @@ async function syncPage(
   const endDateStr = getDate(page, 'Date de fin')
   const modalities = getMultiSelect(page, 'Modalités')
   const montant = getNumber(page, 'Montant')
-  const trainerName = getSelect(page, 'Animé par')
+  // "Animé par" peut être select ou multi_select selon la config Notion
+  const trainerName = getSelect(page, 'Animé par') || getMultiSelect(page, 'Animé par')[0] || ''
   const clientIds = getRelationIds(page, 'Clients')
 
   if (!startDateStr) throw new Error('Date de début manquante')
