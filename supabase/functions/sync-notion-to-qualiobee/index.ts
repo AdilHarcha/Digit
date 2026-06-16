@@ -171,6 +171,26 @@ async function findFormationByType(orgUuid: string, apiKey: string, type: string
   return found
 }
 
+async function findOrCreateLocation(
+  orgUuid: string,
+  apiKey: string,
+  params: { addressLine1: string; city: string }
+) {
+  const res = await qb(`/api/${orgUuid}/location?limit=100`, apiKey)
+  const locations: any[] = res.data ?? []
+  const found = locations.find(
+    (l) =>
+      l.city?.toLowerCase() === params.city.toLowerCase() ||
+      l.addressLine1?.toLowerCase() === params.addressLine1.toLowerCase()
+  )
+  if (found) return found
+  return qb(`/api/${orgUuid}/location`, apiKey, 'POST', {
+    addressLine1: params.addressLine1,
+    city: params.city,
+    country: 'France',
+  })
+}
+
 async function findOrCreateTrainer(orgUuid: string, apiKey: string, name: string) {
   const res = await qb(`/api/${orgUuid}/trainer?limit=100`, apiKey)
   const trainers: any[] = res.data ?? []
@@ -297,6 +317,7 @@ async function syncPage(
   const montant = getNumber(page, 'Montant')
   // "Animé par" peut être select ou multi_select selon la config Notion
   const trainerName = getSelect(page, 'Animé par') || getMultiSelect(page, 'Animé par')[0] || ''
+  const lieu = getSelect(page, 'Lieu') || getText(page, 'Lieu') || ''
   const clientIds = getRelationIds(page, 'Clients')
 
   if (!startDateStr) throw new Error('Date de début manquante')
@@ -343,6 +364,16 @@ async function syncPage(
   if (!trainerName) throw new Error('Champ "Animé par" vide — un formateur est requis')
   const trainer = await findOrCreateTrainer(orgUuid, qbKey, trainerName)
 
+  // Locations : distanciel pour e-learning/remote, physique pour présentiel
+  const locationDistanciel = await findOrCreateLocation(orgUuid, qbKey, {
+    addressLine1: 'Distanciel',
+    city: 'Distanciel',
+  })
+  const locationPhysique = await findOrCreateLocation(orgUuid, qbKey, {
+    addressLine1: lieu || 'Digit Formations',
+    city: lieu || 'Paris',
+  })
+
   // Créer la session (sans le prix dans le nom)
   const cleanName = sessionName.replace(/\s*[-–—]\s*\d[\d\s,.]*€?/g, '').trim()
 
@@ -368,12 +399,14 @@ async function syncPage(
   const sessionDates = buildSessionDates(formationType, startDate, endDate, modalities)
 
   for (const sd of sessionDates) {
+    const isPhysical = sd.type === 'presence'
     const body: Record<string, any> = {
       sessionUuid: session.uuid,
       type: sd.type,
       startAt: sd.startAt,
       endAt: sd.endAt,
       trainerUuids: [trainer.uuid],
+      locationUuid: isPhysical ? locationPhysique.uuid : locationDistanciel.uuid,
     }
     if (sd.elearningHours) body.elearningHours = sd.elearningHours
     if (moduleUuids.length > 0) body.moduleUuids = moduleUuids
