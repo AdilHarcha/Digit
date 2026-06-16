@@ -330,7 +330,7 @@ async function syncPage(
     isConventionDisabled: true,
     isConvocationDisabled: false,
     pricing: {
-      strategy: 'FIXED',
+      strategy: 'FOR_FORMATION',
       precision: 'FIXED',
       moneyValue: montant,
       taxRate: 0,
