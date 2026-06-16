@@ -159,7 +159,8 @@ async function findFormationByType(orgUuid: string, apiKey: string, type: string
     RS: ['rs', 'réseaux sociaux', 'reseaux sociaux', 'social'],
     SEO: ['seo', 'référencement', 'referencement'],
   }
-  const res = await qb(`/api/${orgUuid}/formation?limit=100`, apiKey)
+  // Inclure les modules pour obtenir leurs UUIDs
+  const res = await qb(`/api/${orgUuid}/formation?limit=100&relations[]=modules`, apiKey)
   const formations: any[] = res.data ?? []
   const kws = keywords[type] ?? [type.toLowerCase()]
 
@@ -170,14 +171,26 @@ async function findFormationByType(orgUuid: string, apiKey: string, type: string
   return found
 }
 
-async function findTrainer(orgUuid: string, apiKey: string, name: string) {
+async function findOrCreateTrainer(orgUuid: string, apiKey: string, name: string) {
   const res = await qb(`/api/${orgUuid}/trainer?limit=100`, apiKey)
   const trainers: any[] = res.data ?? []
-  return trainers.find(
+  const found = trainers.find(
     (t) =>
       `${t.firstName} ${t.lastName}`.toLowerCase().includes(name.toLowerCase()) ||
       t.lastName?.toLowerCase().includes(name.toLowerCase())
-  ) ?? null
+  )
+  if (found) return found
+
+  // Créer le formateur s'il n'existe pas dans Qualiobee
+  const parts = name.trim().split(/\s+/)
+  const lastName = parts[parts.length - 1]
+  const firstName = parts.slice(0, -1).join(' ')
+  return qb(`/api/${orgUuid}/trainer`, apiKey, 'POST', {
+    firstName,
+    lastName,
+    externalId: `notion-trainer-${name.toLowerCase().replace(/\s+/g, '-')}`,
+    isExternal: true,
+  })
 }
 
 // ─── Construction des séances ──────────────────────────────────
@@ -316,8 +329,9 @@ async function syncPage(
     isIndividual,
   })
 
-  // Trouver le formateur
-  const trainer = trainerName ? await findTrainer(orgUuid, qbKey, trainerName) : null
+  // Trouver ou créer le formateur (obligatoire pour les séances)
+  if (!trainerName) throw new Error('Champ "Animé par" vide — un formateur est requis')
+  const trainer = await findOrCreateTrainer(orgUuid, qbKey, trainerName)
 
   // Créer la session (sans le prix dans le nom)
   const cleanName = sessionName.replace(/\s*[-–—]\s*\d[\d\s,.]*€?/g, '').trim()
@@ -337,6 +351,9 @@ async function syncPage(
     },
   })
 
+  // Récupérer les UUIDs des modules de la formation (requis par l'API)
+  const moduleUuids: string[] = (formation.modules ?? []).map((m: any) => m.uuid).filter(Boolean)
+
   // Créer les séances
   const sessionDates = buildSessionDates(formationType, startDate, endDate, modalities)
 
@@ -346,9 +363,10 @@ async function syncPage(
       type: sd.type,
       startAt: sd.startAt,
       endAt: sd.endAt,
+      trainerUuids: [trainer.uuid],
     }
     if (sd.elearningHours) body.elearningHours = sd.elearningHours
-    if (trainer && sd.type !== 'elearning') body.trainerUuids = [trainer.uuid]
+    if (moduleUuids.length > 0) body.moduleUuids = moduleUuids
 
     await qb(`/api/${orgUuid}/session-date`, qbKey, 'POST', body)
   }
