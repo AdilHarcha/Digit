@@ -114,7 +114,7 @@ async function qb(path: string, apiKey: string, method = 'GET', body?: object) {
 async function findOrCreateLearner(
   orgUuid: string,
   apiKey: string,
-  params: { firstName: string; lastName: string; email: string; phoneNumber: string; externalId: string }
+  params: { firstName: string; lastName: string; email: string; phoneNumber: string; externalId: string; customerUuid: string; isIndividual: boolean }
 ) {
   const byExtId = await qb(`/api/${orgUuid}/learner?externalId=${encodeURIComponent(params.externalId)}&limit=1`, apiKey)
   if (byExtId.data?.length > 0) return byExtId.data[0]
@@ -124,7 +124,17 @@ async function findOrCreateLearner(
     if (byEmail.data?.length > 0) return byEmail.data[0]
   }
 
-  return qb(`/api/${orgUuid}/learner`, apiKey, 'POST', params)
+  const learnerType = params.isIndividual ? 'PARTICULIER' : 'SALARIE'
+
+  return qb(`/api/${orgUuid}/learner`, apiKey, 'POST', {
+    firstName: params.firstName,
+    lastName: params.lastName,
+    email: params.email,
+    phoneNumber: params.phoneNumber,
+    externalId: params.externalId,
+    customerUuid: params.customerUuid,
+    type: learnerType,
+  })
 }
 
 async function findOrCreateCustomer(
@@ -286,22 +296,24 @@ async function syncPage(
   // Trouver la formation dans Qualiobee
   const formation = await findFormationByType(orgUuid, qbKey, formationType)
 
-  // Créer ou retrouver learner
-  const learner = await findOrCreateLearner(orgUuid, qbKey, {
-    firstName,
-    lastName,
-    email,
-    phoneNumber: phone,
-    externalId: clientPage.id,
-  })
-
-  // Créer ou retrouver customer
+  // Créer ou retrouver customer EN PREMIER (requis pour créer le learner)
   const customer = await findOrCreateCustomer(orgUuid, qbKey, {
     firstName,
     lastName,
     email,
     isIndividual,
     externalId: clientPage.id,
+  })
+
+  // Créer ou retrouver learner avec le customerUuid
+  const learner = await findOrCreateLearner(orgUuid, qbKey, {
+    firstName,
+    lastName,
+    email,
+    phoneNumber: phone,
+    externalId: clientPage.id,
+    customerUuid: customer.uuid,
+    isIndividual,
   })
 
   // Trouver le formateur
