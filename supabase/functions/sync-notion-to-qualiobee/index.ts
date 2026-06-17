@@ -76,8 +76,10 @@ async function fetchPagesToSync(token: string, dbId: string): Promise<NotionPage
 }
 
 async function markPageSynced(pageId: string, token: string) {
+  // Décoche "Automatisation" pour éviter une re-sync au prochain passage du cron
+  // "Ok dans Qualiobee ?" est laissé à la main de l'utilisateur
   await notionPatch(`/pages/${pageId}`, token, {
-    properties: { 'Ok dans Qualiobee ?': { checkbox: true } },
+    properties: { 'Automatisation': { checkbox: false } },
   })
 }
 
