@@ -57,7 +57,12 @@ async function fetchPagesToSync(token: string, dbId: string): Promise<NotionPage
 
   do {
     const body: any = {
-      filter: { property: 'Ok dans Qualiobee ?', checkbox: { equals: false } },
+      filter: {
+        and: [
+          { property: 'Automatisation', checkbox: { equals: true } },
+          { property: 'Ok dans Qualiobee ?', checkbox: { equals: false } },
+        ],
+      },
       page_size: 100,
     }
     if (cursor) body.start_cursor = cursor
