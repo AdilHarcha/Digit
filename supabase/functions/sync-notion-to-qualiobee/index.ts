@@ -3,14 +3,6 @@ import { createClient } from 'jsr:@supabase/supabase-js@2'
 const QB_BASE = 'https://app.qualiobee.fr'
 const NOTION_BASE = 'https://api.notion.com/v1'
 
-// UUIDs des modèles de documents Digit Formations (API interne Qualiobee)
-const DOC_TEMPLATES = [
-  'a7c90117-3286-42d3-8179-871388253f15', // Convocation
-  '8c293ad7-e9ff-4c97-887b-367a87afdeed', // Convention de formation professionnelle
-  '91a36fb4-b5a3-488b-980b-80f69bc4b7ef', // Certificat de réalisation
-  '075ffe7a-f62d-42f7-97c5-b455b3e53819', // Contrat de sous-traitance formation
-]
-
 // ─── Types ─────────────────────────────────────────────────────
 
 interface NotionPage {
@@ -124,37 +116,92 @@ async function loginQualiobeeInternal(username: string, password: string): Promi
   return data.tokens.access_token
 }
 
-async function getSessionConvocations(sessionUuid: string, token: string): Promise<string[]> {
-  const res = await fetch(`${QB_BASE}/api/convocation?session=${sessionUuid}&limit=100`, {
-    headers: { Authorization: `Bearer ${token}` },
-  })
-  if (!res.ok) {
-    console.warn(`convocations fetch: ${res.status} ${await res.text()}`)
+async function probeEndpoint(url: string, token: string): Promise<string[]> {
+  try {
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+    const text = await res.text()
+    console.log(`probe ${url}: ${res.status} | ${text.slice(0, 300)}`)
+    if (!res.ok) return []
+    const data = JSON.parse(text)
+    const items: any[] = data.result?.data ?? data.data ?? (Array.isArray(data) ? data : [])
+    return items.map((c: any) => c.uuid).filter(Boolean)
+  } catch (err) {
+    console.warn(`probe error ${url}:`, err)
     return []
   }
-  const data = await res.json()
-  const items: any[] = data.result?.data ?? data.data ?? []
-  return items.map((c: any) => c.uuid).filter(Boolean)
+}
+
+async function getSessionDocUUIDs(sessionUuid: string, token: string): Promise<{ conv: string[], attest: string[] }> {
+  // Essayer différentes combinaisons endpoint/paramètre pour trouver les bons UUIDs
+  const variants = ['session', 'sessionUuid']
+  const types = ['convocation', 'attestation']
+
+  const allResults: Record<string, string[]> = {}
+  for (const type of types) {
+    for (const param of variants) {
+      const url = `${QB_BASE}/api/${type}?${param}=${sessionUuid}&limit=100`
+      allResults[`${type}:${param}`] = await probeEndpoint(url, token)
+    }
+  }
+
+  const conv = allResults['convocation:session'].length > 0
+    ? allResults['convocation:session']
+    : allResults['convocation:sessionUuid']
+
+  const attest = allResults['attestation:session'].length > 0
+    ? allResults['attestation:session']
+    : allResults['attestation:sessionUuid']
+
+  return { conv, attest }
+}
+
+async function patchDocTemplate(templateUuid: string, docUuid: string, token: string): Promise<void> {
+  try {
+    const res = await fetch(`${QB_BASE}/api/document-template/duplicate/${templateUuid}`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ attestation: docUuid }),
+    })
+    const text = await res.text()
+    if (!res.ok) console.warn(`template ${templateUuid} → ${docUuid}: ${res.status} ${text}`)
+    else console.log(`template ${templateUuid} → ${docUuid}: OK`)
+  } catch (err) {
+    console.warn(`template patch error:`, err)
+  }
 }
 
 async function assignDocumentTemplates(sessionUuid: string, token: string): Promise<void> {
-  const convocationUuids = await getSessionConvocations(sessionUuid, token)
-  if (convocationUuids.length === 0) {
-    console.warn(`Aucune convocation trouvée pour session ${sessionUuid}, modèles non assignés`)
+  // Attendre que Qualiobee crée les enregistrements convocation/attestation
+  await new Promise((r) => setTimeout(r, 2000))
+
+  const { conv, attest } = await getSessionDocUUIDs(sessionUuid, token)
+
+  console.log(`session ${sessionUuid}: ${conv.length} convocation(s), ${attest.length} attestation(s)`)
+
+  if (conv.length === 0 && attest.length === 0) {
+    console.warn(`Aucun UUID document trouvé pour session ${sessionUuid}`)
     return
   }
-  for (const convocationUuid of convocationUuids) {
-    for (const templateUuid of DOC_TEMPLATES) {
-      try {
-        const res = await fetch(`${QB_BASE}/api/document-template/duplicate/${templateUuid}`, {
-          method: 'PATCH',
-          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ attestation: convocationUuid }),
-        })
-        if (!res.ok) console.warn(`template ${templateUuid}: ${res.status} ${await res.text()}`)
-      } catch (err) {
-        console.warn(`template ${templateUuid} error:`, err)
-      }
+
+  // "convocation à traiter" → Certificat de réalisation
+  for (const uuid of conv) {
+    await patchDocTemplate('91a36fb4-b5a3-488b-980b-80f69bc4b7ef', uuid, token)
+  }
+
+  // "certificat à traiter" → Convocation
+  for (const uuid of attest) {
+    await patchDocTemplate('a7c90117-3286-42d3-8179-871388253f15', uuid, token)
+  }
+
+  // Si on n'a trouvé qu'un seul type, assigner les deux templates à ce qui existe
+  if (conv.length === 0 && attest.length > 0) {
+    for (const uuid of attest) {
+      await patchDocTemplate('91a36fb4-b5a3-488b-980b-80f69bc4b7ef', uuid, token)
+    }
+  }
+  if (attest.length === 0 && conv.length > 0) {
+    for (const uuid of conv) {
+      await patchDocTemplate('a7c90117-3286-42d3-8179-871388253f15', uuid, token)
     }
   }
 }
