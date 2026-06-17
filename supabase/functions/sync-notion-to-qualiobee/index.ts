@@ -116,9 +116,9 @@ async function loginQualiobeeInternal(username: string, password: string): Promi
   return data.tokens.access_token
 }
 
-async function probeEndpoint(url: string, token: string): Promise<string[]> {
+async function probeEndpoint(url: string, headers: Record<string, string>): Promise<string[]> {
   try {
-    const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })
+    const res = await fetch(url, { headers })
     const text = await res.text()
     console.log(`probe ${url}: ${res.status} | ${text.slice(0, 300)}`)
     if (!res.ok) return []
@@ -133,115 +133,151 @@ async function probeEndpoint(url: string, token: string): Promise<string[]> {
 
 async function getSessionDocUUIDs(
   sessionUuid: string,
+  sessionObject: any,
+  learnerUuid: string,
   internalToken: string,
   orgUuid: string,
   apiKey: string,
 ): Promise<{ conv: string[], attest: string[] }> {
-  // 1. Essayer de récupérer la session via l'API publique avec les relations
+  const bearerHeaders = { Authorization: `Bearer ${internalToken}` }
+  const apiKeyHeaders = { 'x-api-key': apiKey, 'Content-Type': 'application/json' }
+
+  // 1. Extraire directement depuis l'objet session retourné à la création
+  console.log(`session keys: ${Object.keys(sessionObject).join(',')}`)
+  const convFromSessionObj = [
+    ...(Array.isArray(sessionObject.convocations) ? sessionObject.convocations : []),
+    ...(sessionObject.convocation ? [sessionObject.convocation] : []),
+  ].map((c: any) => (typeof c === 'string' ? c : c?.uuid)).filter(Boolean)
+  const attestFromSessionObj = [
+    ...(Array.isArray(sessionObject.attestations) ? sessionObject.attestations : []),
+    ...(sessionObject.attestation ? [sessionObject.attestation] : []),
+  ].map((a: any) => (typeof a === 'string' ? a : a?.uuid)).filter(Boolean)
+
+  if (convFromSessionObj.length > 0 || attestFromSessionObj.length > 0) {
+    console.log(`UUIDs depuis session obj: ${convFromSessionObj.length} conv, ${attestFromSessionObj.length} attest`)
+    return { conv: convFromSessionObj, attest: attestFromSessionObj }
+  }
+
+  // 2. API publique : session avec relations
   try {
-    const res = await fetch(`${QB_BASE}/api/${orgUuid}/session/${sessionUuid}?relations[]=convocations&relations[]=attestations`, {
-      headers: { 'x-api-key': apiKey, 'Content-Type': 'application/json' },
-    })
+    const res = await fetch(
+      `${QB_BASE}/api/${orgUuid}/session/${sessionUuid}?relations[]=convocations&relations[]=attestations`,
+      { headers: apiKeyHeaders },
+    )
     const text = await res.text()
-    console.log(`session public API: ${res.status} | ${text.slice(0, 500)}`)
+    console.log(`session public API relations: ${res.status} | ${text.slice(0, 600)}`)
     if (res.ok) {
       const data = JSON.parse(text)
       const convFromSession = (data.convocations ?? []).map((c: any) => c.uuid).filter(Boolean)
       const attestFromSession = (data.attestations ?? []).map((a: any) => a.uuid).filter(Boolean)
       if (convFromSession.length > 0 || attestFromSession.length > 0) {
-        console.log(`UUIDs from session object: ${convFromSession.length} conv, ${attestFromSession.length} attest`)
+        console.log(`UUIDs public API relations: ${convFromSession.length} conv, ${attestFromSession.length} attest`)
         return { conv: convFromSession, attest: attestFromSession }
       }
     }
   } catch (err) {
-    console.warn('session public API error:', err)
+    console.warn('session public API relations error:', err)
   }
 
-  // 2. Essayer différentes combinaisons endpoint/paramètre (API interne)
-  const variants = ['session', 'sessionUuid']
-  const types = ['convocation', 'attestation']
-
-  const allResults: Record<string, string[]> = {}
-  for (const type of types) {
-    for (const param of variants) {
-      const url = `${QB_BASE}/api/${type}?${param}=${sessionUuid}&limit=100`
-      allResults[`${type}:${param}`] = await probeEndpoint(url, internalToken)
+  // 3. API interne : GET /api/session/{uuid} avec Bearer token
+  try {
+    const res = await fetch(
+      `${QB_BASE}/api/session/${sessionUuid}?relations[]=convocations&relations[]=attestations`,
+      { headers: bearerHeaders },
+    )
+    const text = await res.text()
+    console.log(`session internal API: ${res.status} | ${text.slice(0, 600)}`)
+    if (res.ok) {
+      const data = JSON.parse(text)
+      const convFromInternal = (data.convocations ?? []).map((c: any) => c.uuid).filter(Boolean)
+      const attestFromInternal = (data.attestations ?? []).map((a: any) => a.uuid).filter(Boolean)
+      if (convFromInternal.length > 0 || attestFromInternal.length > 0) {
+        console.log(`UUIDs internal session: ${convFromInternal.length} conv, ${attestFromInternal.length} attest`)
+        return { conv: convFromInternal, attest: attestFromInternal }
+      }
     }
-    // Essayer aussi avec org UUID
-    for (const param of variants) {
-      const url = `${QB_BASE}/api/${orgUuid}/${type}?${param}=${sessionUuid}&limit=100`
-      allResults[`${orgUuid}/${type}:${param}`] = await probeEndpoint(url, internalToken)
-    }
+  } catch (err) {
+    console.warn('session internal API error:', err)
   }
 
-  const conv =
-    allResults['convocation:session'].length > 0 ? allResults['convocation:session'] :
-    allResults['convocation:sessionUuid'].length > 0 ? allResults['convocation:sessionUuid'] :
-    allResults[`${orgUuid}/convocation:session`].length > 0 ? allResults[`${orgUuid}/convocation:session`] :
-    allResults[`${orgUuid}/convocation:sessionUuid`]
+  // 4. Probes par paramètre de session + learner
+  const sessionParams = ['session', 'sessionUuid']
+  const learnerParams = learnerUuid ? ['learner', 'learnerUuid'] : []
 
-  const attest =
-    allResults['attestation:session'].length > 0 ? allResults['attestation:session'] :
-    allResults['attestation:sessionUuid'].length > 0 ? allResults['attestation:sessionUuid'] :
-    allResults[`${orgUuid}/attestation:session`].length > 0 ? allResults[`${orgUuid}/attestation:session`] :
-    allResults[`${orgUuid}/attestation:sessionUuid`]
+  const convProbeUrls: Array<[string, Record<string, string>]> = []
+  const attestProbeUrls: Array<[string, Record<string, string>]> = []
+
+  for (const param of sessionParams) {
+    convProbeUrls.push([`${QB_BASE}/api/convocation?${param}=${sessionUuid}&limit=100`, bearerHeaders])
+    convProbeUrls.push([`${QB_BASE}/api/${orgUuid}/convocation?${param}=${sessionUuid}&limit=100`, bearerHeaders])
+    convProbeUrls.push([`${QB_BASE}/api/${orgUuid}/convocation?${param}=${sessionUuid}&limit=100`, apiKeyHeaders])
+    attestProbeUrls.push([`${QB_BASE}/api/attestation?${param}=${sessionUuid}&limit=100`, bearerHeaders])
+    attestProbeUrls.push([`${QB_BASE}/api/${orgUuid}/attestation?${param}=${sessionUuid}&limit=100`, bearerHeaders])
+  }
+  for (const param of learnerParams) {
+    convProbeUrls.push([`${QB_BASE}/api/convocation?${param}=${learnerUuid}&limit=100`, bearerHeaders])
+    convProbeUrls.push([`${QB_BASE}/api/${orgUuid}/convocation?${param}=${learnerUuid}&limit=100`, apiKeyHeaders])
+  }
+
+  let conv: string[] = []
+  for (const [url, hdrs] of convProbeUrls) {
+    const uuids = await probeEndpoint(url, hdrs)
+    if (uuids.length > 0) { conv = uuids; break }
+  }
+
+  let attest: string[] = []
+  for (const [url, hdrs] of attestProbeUrls) {
+    const uuids = await probeEndpoint(url, hdrs)
+    if (uuids.length > 0) { attest = uuids; break }
+  }
 
   return { conv, attest }
 }
 
-async function patchDocTemplate(templateUuid: string, docUuid: string, token: string): Promise<void> {
+async function patchDocTemplate(templateUuid: string, docUuid: string, token: string, bodyKey = 'attestation'): Promise<void> {
   try {
     const res = await fetch(`${QB_BASE}/api/document-template/duplicate/${templateUuid}`, {
       method: 'PATCH',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ attestation: docUuid }),
+      body: JSON.stringify({ [bodyKey]: docUuid }),
     })
     const text = await res.text()
-    if (!res.ok) console.warn(`template ${templateUuid} → ${docUuid}: ${res.status} ${text}`)
-    else console.log(`template ${templateUuid} → ${docUuid}: OK`)
+    if (!res.ok) console.warn(`template[${bodyKey}] ${templateUuid} → ${docUuid}: ${res.status} ${text}`)
+    else console.log(`template[${bodyKey}] ${templateUuid} → ${docUuid}: OK`)
   } catch (err) {
     console.warn(`template patch error:`, err)
   }
 }
 
+const TMPL_CONVOCATION = 'a7c90117-3286-42d3-8179-871388253f15'
+
 async function assignDocumentTemplates(
   sessionUuid: string,
+  sessionObject: any,
+  learnerUuid: string,
   token: string,
   orgUuid: string,
   apiKey: string,
 ): Promise<void> {
-  // Attendre que Qualiobee crée les enregistrements convocation/attestation
-  await new Promise((r) => setTimeout(r, 2000))
+  // Attendre 5s que Qualiobee crée les enregistrements convocation/attestation
+  await new Promise((r) => setTimeout(r, 5000))
 
-  const { conv, attest } = await getSessionDocUUIDs(sessionUuid, token, orgUuid, apiKey)
+  const { conv, attest } = await getSessionDocUUIDs(sessionUuid, sessionObject, learnerUuid, token, orgUuid, apiKey)
 
   console.log(`session ${sessionUuid}: ${conv.length} convocation(s), ${attest.length} attestation(s)`)
 
+  // "convocation à traiter" → modèle Convocation (body: { convocation: uuid })
+  for (const uuid of conv) {
+    await patchDocTemplate(TMPL_CONVOCATION, uuid, token, 'convocation')
+  }
+
+  // "certificat à traiter" → modèle Convocation (body: { attestation: uuid })
+  for (const uuid of attest) {
+    await patchDocTemplate(TMPL_CONVOCATION, uuid, token, 'attestation')
+  }
+
   if (conv.length === 0 && attest.length === 0) {
     console.warn(`Aucun UUID document trouvé pour session ${sessionUuid}`)
-    return
-  }
-
-  // "convocation à traiter" → Certificat de réalisation
-  for (const uuid of conv) {
-    await patchDocTemplate('91a36fb4-b5a3-488b-980b-80f69bc4b7ef', uuid, token)
-  }
-
-  // "certificat à traiter" → Convocation
-  for (const uuid of attest) {
-    await patchDocTemplate('a7c90117-3286-42d3-8179-871388253f15', uuid, token)
-  }
-
-  // Si on n'a trouvé qu'un seul type, assigner les deux templates à ce qui existe
-  if (conv.length === 0 && attest.length > 0) {
-    for (const uuid of attest) {
-      await patchDocTemplate('91a36fb4-b5a3-488b-980b-80f69bc4b7ef', uuid, token)
-    }
-  }
-  if (attest.length === 0 && conv.length > 0) {
-    for (const uuid of conv) {
-      await patchDocTemplate('a7c90117-3286-42d3-8179-871388253f15', uuid, token)
-    }
   }
 }
 
@@ -579,7 +615,7 @@ async function syncPage(
   if (qbUsername && qbPassword) {
     try {
       const internalToken = await loginQualiobeeInternal(qbUsername, qbPassword)
-      await assignDocumentTemplates(session.uuid, internalToken, orgUuid, qbKey)
+      await assignDocumentTemplates(session.uuid, session, learner.uuid, internalToken, orgUuid, qbKey)
     } catch (err) {
       console.warn('Assignation modèles échouée (non bloquant):', err)
     }
