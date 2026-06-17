@@ -142,95 +142,102 @@ async function getSessionDocUUIDs(
   const bearerHeaders = { Authorization: `Bearer ${internalToken}` }
   const apiKeyHeaders = { 'x-api-key': apiKey, 'Content-Type': 'application/json' }
 
-  // 1. Extraire directement depuis l'objet session retourné à la création
+  // ── ATTESTATION : sonde directe (méthode prouvée v16) ──────────
+  let attest: string[] = []
+  for (const param of ['session', 'sessionUuid']) {
+    const uuids = await probeEndpoint(`${QB_BASE}/api/attestation?${param}=${sessionUuid}&limit=100`, bearerHeaders)
+    if (uuids.length > 0) { attest = uuids; break }
+  }
+  if (attest.length === 0) {
+    for (const param of ['session', 'sessionUuid']) {
+      const uuids = await probeEndpoint(`${QB_BASE}/api/${orgUuid}/attestation?${param}=${sessionUuid}&limit=100`, bearerHeaders)
+      if (uuids.length > 0) { attest = uuids; break }
+    }
+  }
+
+  // ── CONVOCATION : plusieurs approches en cascade ───────────────
+  let conv: string[] = []
+
+  // 1. Depuis l'objet session retourné à la création
   console.log(`session keys: ${Object.keys(sessionObject).join(',')}`)
-  const convFromSessionObj = [
+  const convFromObj = [
     ...(Array.isArray(sessionObject.convocations) ? sessionObject.convocations : []),
     ...(sessionObject.convocation ? [sessionObject.convocation] : []),
   ].map((c: any) => (typeof c === 'string' ? c : c?.uuid)).filter(Boolean)
-  const attestFromSessionObj = [
-    ...(Array.isArray(sessionObject.attestations) ? sessionObject.attestations : []),
-    ...(sessionObject.attestation ? [sessionObject.attestation] : []),
-  ].map((a: any) => (typeof a === 'string' ? a : a?.uuid)).filter(Boolean)
-
-  if (convFromSessionObj.length > 0 || attestFromSessionObj.length > 0) {
-    console.log(`UUIDs depuis session obj: ${convFromSessionObj.length} conv, ${attestFromSessionObj.length} attest`)
-    return { conv: convFromSessionObj, attest: attestFromSessionObj }
+  if (convFromObj.length > 0) {
+    console.log(`conv depuis session obj: ${convFromObj.join(',')}`)
+    conv = convFromObj
   }
 
-  // 2. API publique : session avec relations
-  try {
-    const res = await fetch(
-      `${QB_BASE}/api/${orgUuid}/session/${sessionUuid}?relations[]=convocations&relations[]=attestations`,
-      { headers: apiKeyHeaders },
-    )
-    const text = await res.text()
-    console.log(`session public API relations: ${res.status} | ${text.slice(0, 600)}`)
-    if (res.ok) {
-      const data = JSON.parse(text)
-      const convFromSession = (data.convocations ?? []).map((c: any) => c.uuid).filter(Boolean)
-      const attestFromSession = (data.attestations ?? []).map((a: any) => a.uuid).filter(Boolean)
-      if (convFromSession.length > 0 || attestFromSession.length > 0) {
-        console.log(`UUIDs public API relations: ${convFromSession.length} conv, ${attestFromSession.length} attest`)
-        return { conv: convFromSession, attest: attestFromSession }
+  // 2. API publique session avec relations
+  if (conv.length === 0) {
+    try {
+      const res = await fetch(
+        `${QB_BASE}/api/${orgUuid}/session/${sessionUuid}?relations[]=convocations&relations[]=attestations`,
+        { headers: apiKeyHeaders },
+      )
+      const text = await res.text()
+      console.log(`session public API relations: ${res.status} | ${text.slice(0, 600)}`)
+      if (res.ok) {
+        const data = JSON.parse(text)
+        const c = (data.convocations ?? []).map((x: any) => x.uuid).filter(Boolean)
+        if (c.length > 0) { console.log(`conv depuis public API: ${c.join(',')}`); conv = c }
+        // Si attestation aussi présente et qu'on n'en a pas encore, on la prend
+        if (attest.length === 0) {
+          const a = (data.attestations ?? []).map((x: any) => x.uuid).filter(Boolean)
+          if (a.length > 0) { attest = a }
+        }
       }
+    } catch (err) {
+      console.warn('session public API relations error:', err)
     }
-  } catch (err) {
-    console.warn('session public API relations error:', err)
   }
 
-  // 3. API interne : GET /api/session/{uuid} avec Bearer token
-  try {
-    const res = await fetch(
-      `${QB_BASE}/api/session/${sessionUuid}?relations[]=convocations&relations[]=attestations`,
-      { headers: bearerHeaders },
-    )
-    const text = await res.text()
-    console.log(`session internal API: ${res.status} | ${text.slice(0, 600)}`)
-    if (res.ok) {
-      const data = JSON.parse(text)
-      const convFromInternal = (data.convocations ?? []).map((c: any) => c.uuid).filter(Boolean)
-      const attestFromInternal = (data.attestations ?? []).map((a: any) => a.uuid).filter(Boolean)
-      if (convFromInternal.length > 0 || attestFromInternal.length > 0) {
-        console.log(`UUIDs internal session: ${convFromInternal.length} conv, ${attestFromInternal.length} attest`)
-        return { conv: convFromInternal, attest: attestFromInternal }
+  // 3. API interne session avec Bearer
+  if (conv.length === 0) {
+    try {
+      const res = await fetch(
+        `${QB_BASE}/api/session/${sessionUuid}?relations[]=convocations&relations[]=attestations`,
+        { headers: bearerHeaders },
+      )
+      const text = await res.text()
+      console.log(`session internal Bearer: ${res.status} | ${text.slice(0, 600)}`)
+      if (res.ok) {
+        const data = JSON.parse(text)
+        const c = (data.convocations ?? []).map((x: any) => x.uuid).filter(Boolean)
+        if (c.length > 0) { console.log(`conv depuis internal Bearer: ${c.join(',')}`); conv = c }
+        if (attest.length === 0) {
+          const a = (data.attestations ?? []).map((x: any) => x.uuid).filter(Boolean)
+          if (a.length > 0) { attest = a }
+        }
       }
+    } catch (err) {
+      console.warn('session internal Bearer error:', err)
     }
-  } catch (err) {
-    console.warn('session internal API error:', err)
   }
 
-  // 4. Probes par paramètre de session + learner
-  const sessionParams = ['session', 'sessionUuid']
-  const learnerParams = learnerUuid ? ['learner', 'learnerUuid'] : []
-
-  const convProbeUrls: Array<[string, Record<string, string>]> = []
-  const attestProbeUrls: Array<[string, Record<string, string>]> = []
-
-  for (const param of sessionParams) {
-    convProbeUrls.push([`${QB_BASE}/api/convocation?${param}=${sessionUuid}&limit=100`, bearerHeaders])
-    convProbeUrls.push([`${QB_BASE}/api/${orgUuid}/convocation?${param}=${sessionUuid}&limit=100`, bearerHeaders])
-    convProbeUrls.push([`${QB_BASE}/api/${orgUuid}/convocation?${param}=${sessionUuid}&limit=100`, apiKeyHeaders])
-    attestProbeUrls.push([`${QB_BASE}/api/attestation?${param}=${sessionUuid}&limit=100`, bearerHeaders])
-    attestProbeUrls.push([`${QB_BASE}/api/${orgUuid}/attestation?${param}=${sessionUuid}&limit=100`, bearerHeaders])
-  }
-  for (const param of learnerParams) {
-    convProbeUrls.push([`${QB_BASE}/api/convocation?${param}=${learnerUuid}&limit=100`, bearerHeaders])
-    convProbeUrls.push([`${QB_BASE}/api/${orgUuid}/convocation?${param}=${learnerUuid}&limit=100`, apiKeyHeaders])
-  }
-
-  let conv: string[] = []
-  for (const [url, hdrs] of convProbeUrls) {
-    const uuids = await probeEndpoint(url, hdrs)
-    if (uuids.length > 0) { conv = uuids; break }
+  // 4. Probes convocation par session + learner
+  if (conv.length === 0) {
+    const convProbes: Array<[string, Record<string, string>]> = [
+      [`${QB_BASE}/api/convocation?session=${sessionUuid}&limit=100`, bearerHeaders],
+      [`${QB_BASE}/api/convocation?sessionUuid=${sessionUuid}&limit=100`, bearerHeaders],
+      [`${QB_BASE}/api/${orgUuid}/convocation?session=${sessionUuid}&limit=100`, bearerHeaders],
+      [`${QB_BASE}/api/${orgUuid}/convocation?session=${sessionUuid}&limit=100`, apiKeyHeaders],
+      [`${QB_BASE}/api/${orgUuid}/convocation?sessionUuid=${sessionUuid}&limit=100`, bearerHeaders],
+      [`${QB_BASE}/api/${orgUuid}/convocation?sessionUuid=${sessionUuid}&limit=100`, apiKeyHeaders],
+      ...(learnerUuid ? [
+        [`${QB_BASE}/api/convocation?learner=${learnerUuid}&limit=100`, bearerHeaders] as [string, Record<string, string>],
+        [`${QB_BASE}/api/${orgUuid}/convocation?learner=${learnerUuid}&limit=100`, apiKeyHeaders] as [string, Record<string, string>],
+        [`${QB_BASE}/api/convocation?learnerUuid=${learnerUuid}&limit=100`, bearerHeaders] as [string, Record<string, string>],
+      ] : []),
+    ]
+    for (const [url, hdrs] of convProbes) {
+      const uuids = await probeEndpoint(url, hdrs)
+      if (uuids.length > 0) { conv = uuids; break }
+    }
   }
 
-  let attest: string[] = []
-  for (const [url, hdrs] of attestProbeUrls) {
-    const uuids = await probeEndpoint(url, hdrs)
-    if (uuids.length > 0) { attest = uuids; break }
-  }
-
+  console.log(`getSessionDocUUIDs result: ${conv.length} conv, ${attest.length} attest`)
   return { conv, attest }
 }
 
