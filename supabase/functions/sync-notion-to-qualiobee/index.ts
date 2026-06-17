@@ -3,6 +3,14 @@ import { createClient } from 'jsr:@supabase/supabase-js@2'
 const QB_BASE = 'https://app.qualiobee.fr'
 const NOTION_BASE = 'https://api.notion.com/v1'
 
+// UUIDs des modèles de documents Digit Formations (API interne Qualiobee)
+const DOC_TEMPLATES = [
+  'a7c90117-3286-42d3-8179-871388253f15', // Convocation
+  '8c293ad7-e9ff-4c97-887b-367a87afdeed', // Convention de formation professionnelle
+  '91a36fb4-b5a3-488b-980b-80f69bc4b7ef', // Certificat de réalisation
+  '075ffe7a-f62d-42f7-97c5-b455b3e53819', // Contrat de sous-traitance formation
+]
+
 // ─── Types ─────────────────────────────────────────────────────
 
 interface NotionPage {
@@ -102,6 +110,54 @@ const getEmail = (p: NotionPage, k: string): string =>
   p.properties[k]?.email ?? ''
 const getPhone = (p: NotionPage, k: string): string =>
   p.properties[k]?.phone_number ?? ''
+
+// ─── Qualiobee internal API (document templates) ──────────────
+
+async function loginQualiobeeInternal(username: string, password: string): Promise<string> {
+  const res = await fetch(`${QB_BASE}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  })
+  if (!res.ok) throw new Error(`Qualiobee login: ${res.status} ${await res.text()}`)
+  const data = await res.json()
+  return data.tokens.access_token
+}
+
+async function getSessionConvocations(sessionUuid: string, token: string): Promise<string[]> {
+  const res = await fetch(`${QB_BASE}/api/convocation?session=${sessionUuid}&limit=100`, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!res.ok) {
+    console.warn(`convocations fetch: ${res.status} ${await res.text()}`)
+    return []
+  }
+  const data = await res.json()
+  const items: any[] = data.result?.data ?? data.data ?? []
+  return items.map((c: any) => c.uuid).filter(Boolean)
+}
+
+async function assignDocumentTemplates(sessionUuid: string, token: string): Promise<void> {
+  const convocationUuids = await getSessionConvocations(sessionUuid, token)
+  if (convocationUuids.length === 0) {
+    console.warn(`Aucune convocation trouvée pour session ${sessionUuid}, modèles non assignés`)
+    return
+  }
+  for (const convocationUuid of convocationUuids) {
+    for (const templateUuid of DOC_TEMPLATES) {
+      try {
+        const res = await fetch(`${QB_BASE}/api/document-template/duplicate/${templateUuid}`, {
+          method: 'PATCH',
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ attestation: convocationUuid }),
+        })
+        if (!res.ok) console.warn(`template ${templateUuid}: ${res.status} ${await res.text()}`)
+      } catch (err) {
+        console.warn(`template ${templateUuid} error:`, err)
+      }
+    }
+  }
+}
 
 // ─── Qualiobee helpers ─────────────────────────────────────────
 
@@ -429,7 +485,19 @@ async function syncPage(
     await qb(`/api/${orgUuid}/session-date`, qbKey, 'POST', body)
   }
 
-  // Cocher "Ok dans Qualiobee ?" dans Notion
+  // Assigner les modèles de documents via l'API interne Qualiobee
+  const qbUsername = Deno.env.get('QUALIOBEE_USERNAME')
+  const qbPassword = Deno.env.get('QUALIOBEE_PASSWORD')
+  if (qbUsername && qbPassword) {
+    try {
+      const internalToken = await loginQualiobeeInternal(qbUsername, qbPassword)
+      await assignDocumentTemplates(session.uuid, internalToken)
+    } catch (err) {
+      console.warn('Assignation modèles échouée (non bloquant):', err)
+    }
+  }
+
+  // Décocher "Automatisation" dans Notion
   await markPageSynced(pageId, notionKey)
 
   // Logger dans Supabase
