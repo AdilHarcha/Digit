@@ -218,6 +218,20 @@ async function findOrCreateTrainer(orgUuid: string, apiKey: string, name: string
 
 // ─── Construction des séances ──────────────────────────────────
 
+function parisUtcOffsetMs(date: Date): number {
+  // Retourne l'offset UTC→Paris en ms (ex: -7200000 pour UTC+2)
+  const utcMs = new Date(date.toLocaleString('en-US', { timeZone: 'UTC' })).getTime()
+  const parisMs = new Date(date.toLocaleString('en-US', { timeZone: 'Europe/Paris' })).getTime()
+  return utcMs - parisMs
+}
+
+function withTimeParis(base: Date, h: number, m: number): Date {
+  // Construit une Date UTC représentant h:m heure de Paris sur la même journée que base
+  const parisDateStr = base.toLocaleDateString('en-CA', { timeZone: 'Europe/Paris' }) // YYYY-MM-DD
+  const naive = new Date(`${parisDateStr}T${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:00Z`)
+  return new Date(naive.getTime() + parisUtcOffsetMs(base))
+}
+
 function buildSessionDates(
   type: string,
   startDate: Date,
@@ -230,11 +244,6 @@ function buildSessionDates(
   const presenceType = isDistanciel ? 'remote' : 'presence'
 
   const fmt = (d: Date) => d.toISOString()
-  const withTime = (base: Date, h: number, m: number) => {
-    const d = new Date(base)
-    d.setHours(h, m, 0, 0)
-    return d
-  }
 
   const dates: Array<{
     type: string
@@ -244,43 +253,38 @@ function buildSessionDates(
   }> = []
 
   if (type === 'IA') {
-    // Elearning du début jusqu'à la veille du présentiel (endDate)
+    // E-learning : startDate 9h → veille de endDate 17h (heure Paris)
     const elearningEnd = new Date(endDate)
     elearningEnd.setDate(elearningEnd.getDate() - 1)
     const safeElearningEnd = elearningEnd >= startDate ? elearningEnd : new Date(startDate)
-    dates.push({ type: 'elearning', startAt: fmt(startDate), endAt: fmt(safeElearningEnd), elearningHours: 14 })
-    // Présentiel sur endDate
-    dates.push({ type: presenceType, startAt: fmt(withTime(endDate, 9, 0)), endAt: fmt(withTime(endDate, 12, 30)) })
-    dates.push({ type: presenceType, startAt: fmt(withTime(endDate, 13, 30)), endAt: fmt(withTime(endDate, 17, 0)) })
+    dates.push({ type: 'elearning', startAt: fmt(withTimeParis(startDate, 9, 0)), endAt: fmt(withTimeParis(safeElearningEnd, 17, 0)), elearningHours: 14 })
+    // Présentiel sur endDate : 9h-12h30 et 13h30-17h (Paris)
+    dates.push({ type: presenceType, startAt: fmt(withTimeParis(endDate, 9, 0)), endAt: fmt(withTimeParis(endDate, 12, 30)) })
+    dates.push({ type: presenceType, startAt: fmt(withTimeParis(endDate, 13, 30)), endAt: fmt(withTimeParis(endDate, 17, 0)) })
   }
 
   if (type === 'RS') {
-    // Elearning du début jusqu'à la veille du présentiel (endDate)
     const elearningEnd = new Date(endDate)
     elearningEnd.setDate(elearningEnd.getDate() - 1)
     const safeElearningEnd = elearningEnd >= startDate ? elearningEnd : new Date(startDate)
-    dates.push({ type: 'elearning', startAt: fmt(startDate), endAt: fmt(safeElearningEnd), elearningHours: 10 })
-    // Présentiel sur endDate
-    dates.push({ type: presenceType, startAt: fmt(withTime(endDate, 9, 0)), endAt: fmt(withTime(endDate, 12, 30)) })
-    dates.push({ type: presenceType, startAt: fmt(withTime(endDate, 13, 30)), endAt: fmt(withTime(endDate, 17, 0)) })
-    // Suivi visio 1h (lendemain du présentiel)
+    dates.push({ type: 'elearning', startAt: fmt(withTimeParis(startDate, 9, 0)), endAt: fmt(withTimeParis(safeElearningEnd, 17, 0)), elearningHours: 10 })
+    dates.push({ type: presenceType, startAt: fmt(withTimeParis(endDate, 9, 0)), endAt: fmt(withTimeParis(endDate, 12, 30)) })
+    dates.push({ type: presenceType, startAt: fmt(withTimeParis(endDate, 13, 30)), endAt: fmt(withTimeParis(endDate, 17, 0)) })
     const suiviDay = new Date(endDate)
     suiviDay.setDate(suiviDay.getDate() + 1)
-    dates.push({ type: 'remote', startAt: fmt(withTime(suiviDay, 10, 0)), endAt: fmt(withTime(suiviDay, 11, 0)) })
+    dates.push({ type: 'remote', startAt: fmt(withTimeParis(suiviDay, 10, 0)), endAt: fmt(withTimeParis(suiviDay, 11, 0)) })
   }
 
   if (type === 'SEO') {
-    // E-learning 7h sur toute la durée
-    dates.push({ type: 'elearning', startAt: fmt(startDate), endAt: fmt(endDate), elearningHours: 7 })
-    // Suivi 1h chaque lundi (1) et jeudi (4) dans la plage de dates
+    dates.push({ type: 'elearning', startAt: fmt(withTimeParis(startDate, 9, 0)), endAt: fmt(withTimeParis(endDate, 17, 0)), elearningHours: 7 })
     const cur = new Date(startDate)
     while (cur <= endDate) {
-      const day = cur.getDay()
-      if (day === 1 || day === 4) {
+      const parisDay = new Date(cur.toLocaleString('en-US', { timeZone: 'Europe/Paris' })).getDay()
+      if (parisDay === 1 || parisDay === 4) {
         dates.push({
           type: 'remote',
-          startAt: fmt(withTime(cur, 10, 0)),
-          endAt: fmt(withTime(cur, 11, 0)),
+          startAt: fmt(withTimeParis(cur, 10, 0)),
+          endAt: fmt(withTimeParis(cur, 11, 0)),
         })
       }
       cur.setDate(cur.getDate() + 1)
