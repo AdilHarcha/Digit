@@ -257,6 +257,7 @@ async function patchDocTemplate(templateUuid: string, docUuid: string, token: st
 }
 
 const TMPL_CONVOCATION = 'a7c90117-3286-42d3-8179-871388253f15'
+const TMPL_CERTIFICAT  = '91a36fb4-b5a3-488b-980b-80f69bc4b7ef'
 
 async function assignDocumentTemplates(
   sessionUuid: string,
@@ -273,14 +274,14 @@ async function assignDocumentTemplates(
 
   console.log(`session ${sessionUuid}: ${conv.length} convocation(s), ${attest.length} attestation(s)`)
 
-  // "convocation à traiter" → modèle Convocation (body: { convocation: uuid })
+  // "convocation à traiter" → modèle Convocation
   for (const uuid of conv) {
     await patchDocTemplate(TMPL_CONVOCATION, uuid, token, 'convocation')
   }
 
-  // "certificat à traiter" → modèle Convocation (body: { attestation: uuid })
+  // "certificat à traiter" → modèle Certificat de réalisation
   for (const uuid of attest) {
-    await patchDocTemplate(TMPL_CONVOCATION, uuid, token, 'attestation')
+    await patchDocTemplate(TMPL_CERTIFICAT, uuid, token, 'attestation')
   }
 
   if (conv.length === 0 && attest.length === 0) {
@@ -445,6 +446,7 @@ function buildSessionDates(
     endAt: string
     elearningHours?: number
     remoteLink?: string
+    softwareName?: string
   }> = []
 
   if (type === 'IA') {
@@ -452,7 +454,7 @@ function buildSessionDates(
     const elearningEnd = new Date(endDate)
     elearningEnd.setDate(elearningEnd.getDate() - 1)
     const safeElearningEnd = elearningEnd >= startDate ? elearningEnd : new Date(startDate)
-    dates.push({ type: 'elearning', startAt: fmt(withTimeParis(startDate, 9, 0)), endAt: fmt(withTimeParis(safeElearningEnd, 17, 0)), elearningHours: 14, remoteLink: ELEARNING_LINK })
+    dates.push({ type: 'elearning', startAt: fmt(withTimeParis(startDate, 9, 0)), endAt: fmt(withTimeParis(safeElearningEnd, 17, 0)), elearningHours: 14, remoteLink: ELEARNING_LINK, softwareName: 'Skool' })
     // Présentiel sur endDate : 9h-12h30 et 13h30-17h (Paris)
     dates.push({ type: presenceType, startAt: fmt(withTimeParis(endDate, 9, 0)), endAt: fmt(withTimeParis(endDate, 12, 30)) })
     dates.push({ type: presenceType, startAt: fmt(withTimeParis(endDate, 13, 30)), endAt: fmt(withTimeParis(endDate, 17, 0)) })
@@ -462,7 +464,7 @@ function buildSessionDates(
     const elearningEnd = new Date(endDate)
     elearningEnd.setDate(elearningEnd.getDate() - 1)
     const safeElearningEnd = elearningEnd >= startDate ? elearningEnd : new Date(startDate)
-    dates.push({ type: 'elearning', startAt: fmt(withTimeParis(startDate, 9, 0)), endAt: fmt(withTimeParis(safeElearningEnd, 17, 0)), elearningHours: 10, remoteLink: ELEARNING_LINK })
+    dates.push({ type: 'elearning', startAt: fmt(withTimeParis(startDate, 9, 0)), endAt: fmt(withTimeParis(safeElearningEnd, 17, 0)), elearningHours: 10, remoteLink: ELEARNING_LINK, softwareName: 'Skool' })
     dates.push({ type: presenceType, startAt: fmt(withTimeParis(endDate, 9, 0)), endAt: fmt(withTimeParis(endDate, 12, 30)) })
     dates.push({ type: presenceType, startAt: fmt(withTimeParis(endDate, 13, 30)), endAt: fmt(withTimeParis(endDate, 17, 0)) })
     const suiviDay = new Date(endDate)
@@ -471,7 +473,7 @@ function buildSessionDates(
   }
 
   if (type === 'SEO') {
-    dates.push({ type: 'elearning', startAt: fmt(withTimeParis(startDate, 9, 0)), endAt: fmt(withTimeParis(endDate, 17, 0)), elearningHours: 7, remoteLink: ELEARNING_LINK })
+    dates.push({ type: 'elearning', startAt: fmt(withTimeParis(startDate, 9, 0)), endAt: fmt(withTimeParis(endDate, 17, 0)), elearningHours: 7, remoteLink: ELEARNING_LINK, softwareName: 'Skool' })
     const cur = new Date(startDate)
     while (cur <= endDate) {
       const parisDay = new Date(cur.toLocaleString('en-US', { timeZone: 'Europe/Paris' })).getDay()
@@ -611,6 +613,7 @@ async function syncPage(
     }
     if (sd.elearningHours) body.elearningHours = sd.elearningHours
     if (sd.remoteLink) body.remoteLink = sd.remoteLink
+    if (sd.softwareName) body.softwareName = sd.softwareName
     if (moduleUuids.length > 0) body.moduleUuids = moduleUuids
 
     await qb(`/api/${orgUuid}/session-date`, qbKey, 'POST', body)
