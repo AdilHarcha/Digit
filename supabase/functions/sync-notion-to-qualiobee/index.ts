@@ -622,7 +622,7 @@ async function syncPage(
     }
     if (sd.elearningHours) body.elearningHours = sd.elearningHours
     if (sd.remoteLink) body.remoteLink = sd.remoteLink
-    if (sd.softwareName) body.softwareName = sd.softwareName
+    if (sd.softwareName) body.remoteTool = sd.softwareName
     const moduleUuids = moduleForType(sd.type)
     if (moduleUuids.length > 0) body.moduleUuids = moduleUuids
 
