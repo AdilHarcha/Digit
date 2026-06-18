@@ -60,6 +60,22 @@ async function markSessionCreated(pageId: string, token: string) {
   })
 }
 
+async function fetchPagesToSync(token: string, dbId: string): Promise<NotionPage[]> {
+  const pages: NotionPage[] = []
+  let cursor: string | undefined = undefined
+  do {
+    const body: any = {
+      filter: { property: 'Automatisation', checkbox: { equals: true } },
+      page_size: 100,
+    }
+    if (cursor) body.start_cursor = cursor
+    const data = await notionPost(`/databases/${dbId}/query`, token, body)
+    pages.push(...data.results)
+    cursor = data.has_more ? data.next_cursor : undefined
+  } while (cursor)
+  return pages
+}
+
 // Property extractors
 const getTitle = (p: NotionPage, k: string) =>
   p.properties[k]?.title?.map((t: any) => t.plain_text).join('') ?? ''
@@ -729,61 +745,42 @@ Deno.serve(async (req) => {
   const ORG_UUID = Deno.env.get('QUALIOBEE_ORG_UUID')!
   const QB_KEY = Deno.env.get('QUALIOBEE_API_KEY')!
   const NOTION_KEY = Deno.env.get('NOTION_API_KEY')!
+  const NOTION_DB = Deno.env.get('NOTION_DATABASE_ID')!
 
   const supabase = createClient(
     Deno.env.get('SUPABASE_URL')!,
     Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
   )
 
-  // Notion button automation sends: { source: {...}, data: { object: "page", id: "...", ... } }
-  // ou directement { object: "page", id: "...", ... }
-  let body: any = null
-  try { body = await req.json() } catch { /* ignore */ }
+  // Mode batch (cron) : cherche toutes les pages avec Automatisation = true
+  const pages = await fetchPagesToSync(NOTION_KEY, NOTION_DB)
 
-  const pageData: NotionPage | null =
-    body?.data?.object === 'page' ? body.data :
-    body?.object === 'page' ? body :
-    null
-
-  if (!pageData?.id) {
-    return new Response(
-      JSON.stringify({ error: 'Payload invalide: aucune page Notion trouvée dans le body' }),
-      { status: 400, headers: { 'Content-Type': 'application/json' } }
-    )
-  }
-
-  // Refetch la page complète depuis Notion pour avoir toutes les propriétés à jour
-  let page: NotionPage
-  try {
-    page = await fetch(`https://api.notion.com/v1/pages/${pageData.id}`, {
-      headers: { Authorization: `Bearer ${NOTION_KEY}`, 'Notion-Version': '2022-06-28' },
-    }).then(async (r) => {
-      if (!r.ok) throw new Error(`Notion GET page: ${r.status} ${await r.text()}`)
-      return r.json()
+  if (pages.length === 0) {
+    return new Response(JSON.stringify({ processed: 0, success: 0, errors: 0 }), {
+      headers: { 'Content-Type': 'application/json' },
     })
-  } catch (err) {
-    return new Response(
-      JSON.stringify({ error: `Impossible de récupérer la page Notion: ${err}` }),
-      { status: 500, headers: { 'Content-Type': 'application/json' } }
-    )
   }
 
-  try {
-    const result = await syncPage(page, ORG_UUID, QB_KEY, NOTION_KEY, supabase)
-    return new Response(
-      JSON.stringify({ success: true, pageId: page.id, ...result }),
-      { headers: { 'Content-Type': 'application/json' } }
-    )
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    await supabase.from('qualiobee_sync_log').insert({
-      notion_page_id: page.id,
-      status: 'error',
-      error_message: message,
-    })
-    return new Response(
-      JSON.stringify({ error: message }),
-      { status: 500, headers: { 'Content-Type': 'application/json' } }
-    )
+  const results: any[] = []
+  const errors: any[] = []
+
+  for (const page of pages) {
+    try {
+      const result = await syncPage(page, ORG_UUID, QB_KEY, NOTION_KEY, supabase)
+      results.push({ pageId: page.id, ...result })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      errors.push({ pageId: page.id, error: message })
+      await supabase.from('qualiobee_sync_log').insert({
+        notion_page_id: page.id,
+        status: 'error',
+        error_message: message,
+      })
+    }
   }
+
+  return new Response(
+    JSON.stringify({ processed: pages.length, success: results.length, errors: errors.length, results, errors }),
+    { headers: { 'Content-Type': 'application/json' } }
+  )
 })
