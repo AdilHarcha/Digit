@@ -254,7 +254,7 @@ async function assignDocumentTemplates(
 
   for (const uuid of conv) {
     await patchDocTemplate(TMPL_CONVOCATION, uuid, token, 'convocation')
-    await patchDocTemplate(TMPL_CERTIFICAT, uuid, token, 'convocation')
+    await patchDocTemplate(TMPL_CERTIFICAT, uuid, token, 'attestation')
   }
 
   if (conv.length === 0) {
@@ -648,9 +648,8 @@ async function syncPage(
         status: 'debug',
         error_message: `conv=${conv.join(',')||'none'}`,
       })
-      // Les deux templates utilisent le même UUID convocation avec la clé "convocation"
       for (const uuid of conv) await patchDocTemplate(TMPL_CONVOCATION, uuid, internalToken, 'convocation')
-      for (const uuid of conv) await patchDocTemplate(TMPL_CERTIFICAT, uuid, internalToken, 'convocation')
+      for (const uuid of conv) await patchDocTemplate(TMPL_CERTIFICAT, uuid, internalToken, 'attestation')
     } catch (err) {
       console.warn('Assignation modèles échouée (non bloquant):', err)
       await supabase.from('qualiobee_sync_log').insert({
