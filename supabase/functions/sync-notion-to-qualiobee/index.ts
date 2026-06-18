@@ -53,7 +53,10 @@ async function notionPatch(path: string, token: string, body: object) {
 
 async function markSessionCreated(pageId: string, token: string) {
   await notionPatch(`/pages/${pageId}`, token, {
-    properties: { 'declencher': { checkbox: true } },
+    properties: {
+      'Automatisation': { checkbox: false },
+      'declencher': { checkbox: true },
+    },
   })
 }
 
