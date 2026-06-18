@@ -651,10 +651,22 @@ async function syncPage(
   const qbUsername = Deno.env.get('QUALIOBEE_USERNAME')
   const qbPassword = Deno.env.get('QUALIOBEE_PASSWORD')
   if (qbUsername && qbPassword) {
+    await supabase.from('qualiobee_sync_log').insert({
+      notion_page_id: pageId, session_name: sessionName, qualiobee_session_uuid: session.uuid,
+      status: 'debug', error_message: 'CHECKPOINT-1: entree bloc credentials',
+    })
     try {
       const internalToken = await loginQualiobeeInternal(qbUsername, qbPassword)
+      await supabase.from('qualiobee_sync_log').insert({
+        notion_page_id: pageId, session_name: sessionName, qualiobee_session_uuid: session.uuid,
+        status: 'debug', error_message: 'CHECKPOINT-2: login-ok avant wait 15s',
+      })
       // Attendre 15s que Qualiobee crée les documents convocation/attestation
       await new Promise((r) => setTimeout(r, 15000))
+      await supabase.from('qualiobee_sync_log').insert({
+        notion_page_id: pageId, session_name: sessionName, qualiobee_session_uuid: session.uuid,
+        status: 'debug', error_message: 'CHECKPOINT-3: apres wait 15s',
+      })
       const { conv, attest } = await getSessionDocUUIDs(session.uuid, session, learner.uuid, internalToken, orgUuid, qbKey)
       await supabase.from('qualiobee_sync_log').insert({
         notion_page_id: pageId,
