@@ -595,8 +595,22 @@ async function syncPage(
 
   console.log(`session créée: ${session.uuid} | keys: ${Object.keys(session).join(',')} | ${JSON.stringify(session).slice(0, 400)}`)
 
-  // Récupérer les UUIDs des modules de la formation (requis par l'API)
-  const moduleUuids: string[] = (formation.modules ?? []).map((m: any) => m.uuid).filter(Boolean)
+  // Récupérer les modules de la formation pour matching par type de séance
+  const formationModules: { uuid: string; name: string }[] = (formation.modules ?? [])
+    .map((m: any) => ({ uuid: m.uuid, name: (m.name ?? m.title ?? '').toLowerCase() }))
+    .filter((m: any) => m.uuid)
+
+  function moduleForType(type: string): string[] {
+    if (formationModules.length === 0) return []
+    let matched = formationModules.find((m) => {
+      if (type === 'elearning') return m.name.includes('e-learning') || m.name.includes('elearning')
+      if (type === 'remote') return m.name.includes('distanciel')
+      if (type === 'presence') return m.name.includes('présentiel') || m.name.includes('presentiel')
+      return false
+    })
+    if (!matched) matched = formationModules[0]
+    return [matched.uuid]
+  }
 
   // Créer les séances
   const sessionDates = buildSessionDates(formationType, startDate, endDate, modalities)
@@ -614,6 +628,7 @@ async function syncPage(
     if (sd.elearningHours) body.elearningHours = sd.elearningHours
     if (sd.remoteLink) body.remoteLink = sd.remoteLink
     if (sd.softwareName) body.softwareName = sd.softwareName
+    const moduleUuids = moduleForType(sd.type)
     if (moduleUuids.length > 0) body.moduleUuids = moduleUuids
 
     await qb(`/api/${orgUuid}/session-date`, qbKey, 'POST', body)
