@@ -634,19 +634,7 @@ async function syncPage(
     await qb(`/api/${orgUuid}/session-date`, qbKey, 'POST', body)
   }
 
-  // Assigner les modèles de documents via l'API interne Qualiobee
-  const qbUsername = Deno.env.get('QUALIOBEE_USERNAME')
-  const qbPassword = Deno.env.get('QUALIOBEE_PASSWORD')
-  if (qbUsername && qbPassword) {
-    try {
-      const internalToken = await loginQualiobeeInternal(qbUsername, qbPassword)
-      await assignDocumentTemplates(session.uuid, session, learner.uuid, internalToken, orgUuid, qbKey)
-    } catch (err) {
-      console.warn('Assignation modèles échouée (non bloquant):', err)
-    }
-  }
-
-  // Décocher "Automatisation" dans Notion
+  // Décocher "Automatisation" en PREMIER pour éviter les doublons si la suite timeout
   await markPageSynced(pageId, notionKey)
 
   // Logger dans Supabase
@@ -658,6 +646,38 @@ async function syncPage(
     client_name: `${firstName} ${lastName}`,
     status: 'success',
   })
+
+  // Assigner les modèles de documents via l'API interne Qualiobee
+  const qbUsername = Deno.env.get('QUALIOBEE_USERNAME')
+  const qbPassword = Deno.env.get('QUALIOBEE_PASSWORD')
+  if (qbUsername && qbPassword) {
+    try {
+      const internalToken = await loginQualiobeeInternal(qbUsername, qbPassword)
+      // Attendre 15s que Qualiobee crée les documents convocation/attestation
+      await new Promise((r) => setTimeout(r, 15000))
+      const { conv, attest } = await getSessionDocUUIDs(session.uuid, session, learner.uuid, internalToken, orgUuid, qbKey)
+      await supabase.from('qualiobee_sync_log').insert({
+        notion_page_id: pageId,
+        session_name: sessionName,
+        qualiobee_session_uuid: session.uuid,
+        status: 'debug',
+        error_message: `conv=${conv.join(',')||'none'} attest=${attest.join(',')||'none'}`,
+      })
+      for (const uuid of conv) await patchDocTemplate(TMPL_CONVOCATION, uuid, internalToken, 'convocation')
+      for (const uuid of attest) await patchDocTemplate(TMPL_CERTIFICAT, uuid, internalToken, 'attestation')
+    } catch (err) {
+      console.warn('Assignation modèles échouée (non bloquant):', err)
+      await supabase.from('qualiobee_sync_log').insert({
+        notion_page_id: pageId,
+        session_name: sessionName,
+        qualiobee_session_uuid: session.uuid,
+        status: 'debug',
+        error_message: `template-error: ${err instanceof Error ? err.message : String(err)}`,
+      })
+    }
+  } else {
+    console.warn('QUALIOBEE_USERNAME ou QUALIOBEE_PASSWORD non définis — assignation modèles ignorée')
+  }
 
   return {
     sessionUuid: session.uuid,
