@@ -439,6 +439,7 @@ function buildSessionDates(
   type: string,
   startDate: Date,
   endDate: Date,
+  formationDate: Date,
   modalities: string[]
 ) {
   const isDistanciel = modalities.some((m) =>
@@ -460,33 +461,30 @@ function buildSessionDates(
   }> = []
 
   if (type === 'IA' || type === 'DEVIA') {
-    // Présentiel EN PREMIER pour que Qualiobee l'identifie comme "première séance"
-    dates.push({ type: presenceType, startAt: fmt(withTimeParis(endDate, 9, 0)), endAt: fmt(withTimeParis(endDate, 12, 30)) })
-    dates.push({ type: presenceType, startAt: fmt(withTimeParis(endDate, 13, 30)), endAt: fmt(withTimeParis(endDate, 17, 0)) })
-    // E-learning : startDate 9h → veille de endDate 17h (heure Paris)
-    const elearningEnd = new Date(endDate)
-    elearningEnd.setDate(elearningEnd.getDate() - 1)
-    const safeElearningEnd = elearningEnd >= startDate ? elearningEnd : new Date(startDate)
-    dates.push({ type: 'elearning', startAt: fmt(withTimeParis(startDate, 9, 0)), endAt: fmt(withTimeParis(safeElearningEnd, 17, 0)), elearningHours: 14, remoteLink: ELEARNING_LINK, softwareName: 'Skool' })
+    // Présentiel EN PREMIER (Journee formation) pour que Qualiobee l'identifie comme "première séance"
+    dates.push({ type: presenceType, startAt: fmt(withTimeParis(formationDate, 9, 0)), endAt: fmt(withTimeParis(formationDate, 12, 30)) })
+    dates.push({ type: presenceType, startAt: fmt(withTimeParis(formationDate, 13, 30)), endAt: fmt(withTimeParis(formationDate, 17, 0)) })
+    // E-learning : Date de début 9h → Date de fin 17h
+    dates.push({ type: 'elearning', startAt: fmt(withTimeParis(startDate, 9, 0)), endAt: fmt(withTimeParis(endDate, 17, 0)), elearningHours: 14, remoteLink: ELEARNING_LINK, softwareName: 'Skool' })
   }
 
   if (type === 'RS' || type === 'CM') {
-    // Présentiel EN PREMIER pour que Qualiobee l'identifie comme "première séance"
-    dates.push({ type: presenceType, startAt: fmt(withTimeParis(endDate, 9, 0)), endAt: fmt(withTimeParis(endDate, 12, 30)) })
-    dates.push({ type: presenceType, startAt: fmt(withTimeParis(endDate, 13, 30)), endAt: fmt(withTimeParis(endDate, 17, 0)) })
-    const elearningEnd = new Date(endDate)
-    elearningEnd.setDate(elearningEnd.getDate() - 1)
-    const safeElearningEnd = elearningEnd >= startDate ? elearningEnd : new Date(startDate)
-    dates.push({ type: 'elearning', startAt: fmt(withTimeParis(startDate, 9, 0)), endAt: fmt(withTimeParis(safeElearningEnd, 17, 0)), elearningHours: 10, remoteLink: ELEARNING_LINK, softwareName: 'Skool' })
-    const suiviDay = new Date(endDate)
+    // Présentiel EN PREMIER (Journee formation) pour que Qualiobee l'identifie comme "première séance"
+    dates.push({ type: presenceType, startAt: fmt(withTimeParis(formationDate, 9, 0)), endAt: fmt(withTimeParis(formationDate, 12, 30)) })
+    dates.push({ type: presenceType, startAt: fmt(withTimeParis(formationDate, 13, 30)), endAt: fmt(withTimeParis(formationDate, 17, 0)) })
+    // E-learning : Date de début 9h → Date de fin 17h
+    dates.push({ type: 'elearning', startAt: fmt(withTimeParis(startDate, 9, 0)), endAt: fmt(withTimeParis(endDate, 17, 0)), elearningHours: 10, remoteLink: ELEARNING_LINK, softwareName: 'Skool' })
+    // Séance de suivi : lendemain de la Journee formation
+    const suiviDay = new Date(formationDate)
     suiviDay.setDate(suiviDay.getDate() + 1)
     dates.push({ type: 'remote', startAt: fmt(withTimeParis(suiviDay, 10, 0)), endAt: fmt(withTimeParis(suiviDay, 11, 0)) })
   }
 
   if (type === 'LINKEDIN') {
-    // Présentiel sur startDate matin + après-midi, puis e-learning startDate→endDate
-    dates.push({ type: presenceType, startAt: fmt(withTimeParis(startDate, 9, 0)), endAt: fmt(withTimeParis(startDate, 12, 30)) })
-    dates.push({ type: presenceType, startAt: fmt(withTimeParis(startDate, 13, 30)), endAt: fmt(withTimeParis(startDate, 17, 0)) })
+    // Présentiel EN PREMIER sur Journee formation
+    dates.push({ type: presenceType, startAt: fmt(withTimeParis(formationDate, 9, 0)), endAt: fmt(withTimeParis(formationDate, 12, 30)) })
+    dates.push({ type: presenceType, startAt: fmt(withTimeParis(formationDate, 13, 30)), endAt: fmt(withTimeParis(formationDate, 17, 0)) })
+    // E-learning : Date de début 9h → Date de fin 17h
     dates.push({ type: 'elearning', startAt: fmt(withTimeParis(startDate, 9, 0)), endAt: fmt(withTimeParis(endDate, 17, 0)), elearningHours: 1, remoteLink: ELEARNING_LINK, softwareName: 'Skool' })
   }
 
@@ -544,8 +542,11 @@ async function syncPage(
   const lieu = getSelect(page, 'Lieu') || getText(page, 'Lieu') || ''
   const clientIds = getRelationIds(page, 'Clients')
 
+  const formationDateStr = getDate(page, 'Journee formation')
+
   if (!startDateStr) throw new Error('Date de début manquante')
   if (!endDateStr) throw new Error('Date de fin manquante')
+  if (!formationDateStr) throw new Error('Journee formation manquante')
   if (clientIds.length === 0) throw new Error('Aucun client lié à la session')
 
   // Idempotence : éviter les doublons si le webhook est appelé plusieurs fois
@@ -557,6 +558,7 @@ async function syncPage(
 
   const startDate = new Date(startDateStr)
   const endDate = new Date(endDateStr)
+  const formationDate = new Date(formationDateStr)
   const formationType = detectFormationType(sessionName)
 
   // Récupérer les infos du client depuis Notion
@@ -639,7 +641,7 @@ async function syncPage(
   }
 
   // Créer les séances
-  const sessionDates = buildSessionDates(formationType, startDate, endDate, modalities)
+  const sessionDates = buildSessionDates(formationType, startDate, endDate, formationDate, modalities)
 
   for (const sd of sessionDates) {
     const isPhysical = sd.type === 'presence'
