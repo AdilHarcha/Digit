@@ -138,22 +138,9 @@ async function getSessionDocUUIDs(
   internalToken: string,
   orgUuid: string,
   apiKey: string,
-): Promise<{ conv: string[], attest: string[] }> {
+): Promise<{ conv: string[] }> {
   const bearerHeaders = { Authorization: `Bearer ${internalToken}` }
   const apiKeyHeaders = { 'x-api-key': apiKey, 'Content-Type': 'application/json' }
-
-  // ── ATTESTATION : sonde directe (méthode prouvée v16) ──────────
-  let attest: string[] = []
-  for (const param of ['session', 'sessionUuid']) {
-    const uuids = await probeEndpoint(`${QB_BASE}/api/attestation?${param}=${sessionUuid}&limit=100`, bearerHeaders)
-    if (uuids.length > 0) { attest = uuids; break }
-  }
-  if (attest.length === 0) {
-    for (const param of ['session', 'sessionUuid']) {
-      const uuids = await probeEndpoint(`${QB_BASE}/api/${orgUuid}/attestation?${param}=${sessionUuid}&limit=100`, bearerHeaders)
-      if (uuids.length > 0) { attest = uuids; break }
-    }
-  }
 
   // ── CONVOCATION : plusieurs approches en cascade ───────────────
   let conv: string[] = []
@@ -182,11 +169,6 @@ async function getSessionDocUUIDs(
         const data = JSON.parse(text)
         const c = (data.convocations ?? []).map((x: any) => x.uuid).filter(Boolean)
         if (c.length > 0) { console.log(`conv depuis public API: ${c.join(',')}`); conv = c }
-        // Si attestation aussi présente et qu'on n'en a pas encore, on la prend
-        if (attest.length === 0) {
-          const a = (data.attestations ?? []).map((x: any) => x.uuid).filter(Boolean)
-          if (a.length > 0) { attest = a }
-        }
       }
     } catch (err) {
       console.warn('session public API relations error:', err)
@@ -197,7 +179,7 @@ async function getSessionDocUUIDs(
   if (conv.length === 0) {
     try {
       const res = await fetch(
-        `${QB_BASE}/api/session/${sessionUuid}?relations[]=convocations&relations[]=attestations`,
+        `${QB_BASE}/api/session/${sessionUuid}?relations[]=convocations`,
         { headers: bearerHeaders },
       )
       const text = await res.text()
@@ -206,10 +188,6 @@ async function getSessionDocUUIDs(
         const data = JSON.parse(text)
         const c = (data.convocations ?? []).map((x: any) => x.uuid).filter(Boolean)
         if (c.length > 0) { console.log(`conv depuis internal Bearer: ${c.join(',')}`); conv = c }
-        if (attest.length === 0) {
-          const a = (data.attestations ?? []).map((x: any) => x.uuid).filter(Boolean)
-          if (a.length > 0) { attest = a }
-        }
       }
     } catch (err) {
       console.warn('session internal Bearer error:', err)
@@ -237,8 +215,8 @@ async function getSessionDocUUIDs(
     }
   }
 
-  console.log(`getSessionDocUUIDs result: ${conv.length} conv, ${attest.length} attest`)
-  return { conv, attest }
+  console.log(`getSessionDocUUIDs result: ${conv.length} conv`)
+  return { conv }
 }
 
 async function patchDocTemplate(templateUuid: string, docUuid: string, token: string, bodyKey = 'attestation'): Promise<void> {
@@ -270,22 +248,17 @@ async function assignDocumentTemplates(
   // Attendre 5s que Qualiobee crée les enregistrements convocation/attestation
   await new Promise((r) => setTimeout(r, 5000))
 
-  const { conv, attest } = await getSessionDocUUIDs(sessionUuid, sessionObject, learnerUuid, token, orgUuid, apiKey)
+  const { conv } = await getSessionDocUUIDs(sessionUuid, sessionObject, learnerUuid, token, orgUuid, apiKey)
 
-  console.log(`session ${sessionUuid}: ${conv.length} convocation(s), ${attest.length} attestation(s)`)
+  console.log(`session ${sessionUuid}: ${conv.length} convocation(s)`)
 
-  // "convocation à traiter" → modèle Convocation
   for (const uuid of conv) {
     await patchDocTemplate(TMPL_CONVOCATION, uuid, token, 'convocation')
+    await patchDocTemplate(TMPL_CERTIFICAT, uuid, token, 'convocation')
   }
 
-  // "certificat à traiter" → modèle Certificat de réalisation
-  for (const uuid of attest) {
-    await patchDocTemplate(TMPL_CERTIFICAT, uuid, token, 'attestation')
-  }
-
-  if (conv.length === 0 && attest.length === 0) {
-    console.warn(`Aucun UUID document trouvé pour session ${sessionUuid}`)
+  if (conv.length === 0) {
+    console.warn(`Aucun UUID convocation trouvé pour session ${sessionUuid}`)
   }
 }
 
@@ -667,16 +640,17 @@ async function syncPage(
         notion_page_id: pageId, session_name: sessionName, qualiobee_session_uuid: session.uuid,
         status: 'debug', error_message: 'CHECKPOINT-3: apres wait 15s',
       })
-      const { conv, attest } = await getSessionDocUUIDs(session.uuid, session, learner.uuid, internalToken, orgUuid, qbKey)
+      const { conv } = await getSessionDocUUIDs(session.uuid, session, learner.uuid, internalToken, orgUuid, qbKey)
       await supabase.from('qualiobee_sync_log').insert({
         notion_page_id: pageId,
         session_name: sessionName,
         qualiobee_session_uuid: session.uuid,
         status: 'debug',
-        error_message: `conv=${conv.join(',')||'none'} attest=${attest.join(',')||'none'}`,
+        error_message: `conv=${conv.join(',')||'none'}`,
       })
+      // Les deux templates utilisent le même UUID convocation avec la clé "convocation"
       for (const uuid of conv) await patchDocTemplate(TMPL_CONVOCATION, uuid, internalToken, 'convocation')
-      for (const uuid of attest) await patchDocTemplate(TMPL_CERTIFICAT, uuid, internalToken, 'attestation')
+      for (const uuid of conv) await patchDocTemplate(TMPL_CERTIFICAT, uuid, internalToken, 'convocation')
     } catch (err) {
       console.warn('Assignation modèles échouée (non bloquant):', err)
       await supabase.from('qualiobee_sync_log').insert({
