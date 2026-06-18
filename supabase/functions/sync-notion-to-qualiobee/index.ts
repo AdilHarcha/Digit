@@ -676,7 +676,13 @@ async function syncPage(
       })
     }
   } else {
-    console.warn('QUALIOBEE_USERNAME ou QUALIOBEE_PASSWORD non définis — assignation modèles ignorée')
+    await supabase.from('qualiobee_sync_log').insert({
+      notion_page_id: pageId,
+      session_name: sessionName,
+      qualiobee_session_uuid: session.uuid,
+      status: 'debug',
+      error_message: 'QUALIOBEE_USERNAME ou QUALIOBEE_PASSWORD non definis dans les secrets Supabase',
+    })
   }
 
   return {
