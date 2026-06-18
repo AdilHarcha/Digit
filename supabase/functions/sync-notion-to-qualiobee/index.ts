@@ -219,6 +219,28 @@ async function getSessionDocUUIDs(
   return { conv }
 }
 
+async function enableSubrogation(pricingUuid: string, token: string): Promise<void> {
+  try {
+    const patchRes = await fetch(`${QB_BASE}/api/pricing/${pricingUuid}`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ subrogation: true }),
+    })
+    const patchText = await patchRes.text()
+    console.log(`pricing subrogation PATCH: ${patchRes.status} | ${patchText.slice(0, 200)}`)
+
+    const funderRes = await fetch(`${QB_BASE}/api/funder`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pricing: pricingUuid }),
+    })
+    const funderText = await funderRes.text()
+    console.log(`funder POST: ${funderRes.status} | ${funderText.slice(0, 200)}`)
+  } catch (err) {
+    console.warn('enableSubrogation error:', err)
+  }
+}
+
 async function patchDocTemplate(templateUuid: string, docUuid: string, token: string, bodyKey = 'attestation'): Promise<void> {
   try {
     const res = await fetch(`${QB_BASE}/api/document-template/duplicate/${templateUuid}`, {
@@ -650,6 +672,22 @@ async function syncPage(
       })
       for (const uuid of conv) await patchDocTemplate(TMPL_CONVOCATION, uuid, internalToken, 'convocation')
       for (const uuid of conv) await patchDocTemplate(TMPL_CERTIFICAT, uuid, internalToken, 'attestation')
+
+      // Activer la subrogation automatiquement
+      const pricingUuid = session.pricing?.uuid
+      if (pricingUuid) {
+        await enableSubrogation(pricingUuid, internalToken)
+        await supabase.from('qualiobee_sync_log').insert({
+          notion_page_id: pageId, session_name: sessionName, qualiobee_session_uuid: session.uuid,
+          status: 'debug', error_message: `subrogation-ok: pricing=${pricingUuid}`,
+        })
+      } else {
+        console.warn(`pricing UUID non trouvé dans session ${session.uuid}. Keys: ${Object.keys(session).join(',')}`)
+        await supabase.from('qualiobee_sync_log').insert({
+          notion_page_id: pageId, session_name: sessionName, qualiobee_session_uuid: session.uuid,
+          status: 'debug', error_message: `subrogation-skip: no pricingUuid (session keys: ${Object.keys(session).join(',')})`,
+        })
+      }
     } catch (err) {
       console.warn('Assignation modèles échouée (non bloquant):', err)
       await supabase.from('qualiobee_sync_log').insert({
