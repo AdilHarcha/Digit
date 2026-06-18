@@ -460,23 +460,24 @@ function buildSessionDates(
   }> = []
 
   if (type === 'IA' || type === 'DEVIA') {
+    // Présentiel EN PREMIER pour que Qualiobee l'identifie comme "première séance"
+    dates.push({ type: presenceType, startAt: fmt(withTimeParis(endDate, 9, 0)), endAt: fmt(withTimeParis(endDate, 12, 30)) })
+    dates.push({ type: presenceType, startAt: fmt(withTimeParis(endDate, 13, 30)), endAt: fmt(withTimeParis(endDate, 17, 0)) })
     // E-learning : startDate 9h → veille de endDate 17h (heure Paris)
     const elearningEnd = new Date(endDate)
     elearningEnd.setDate(elearningEnd.getDate() - 1)
     const safeElearningEnd = elearningEnd >= startDate ? elearningEnd : new Date(startDate)
     dates.push({ type: 'elearning', startAt: fmt(withTimeParis(startDate, 9, 0)), endAt: fmt(withTimeParis(safeElearningEnd, 17, 0)), elearningHours: 14, remoteLink: ELEARNING_LINK, softwareName: 'Skool' })
-    // Présentiel sur endDate : 9h-12h30 et 13h30-17h (Paris)
-    dates.push({ type: presenceType, startAt: fmt(withTimeParis(endDate, 9, 0)), endAt: fmt(withTimeParis(endDate, 12, 30)) })
-    dates.push({ type: presenceType, startAt: fmt(withTimeParis(endDate, 13, 30)), endAt: fmt(withTimeParis(endDate, 17, 0)) })
   }
 
   if (type === 'RS' || type === 'CM') {
+    // Présentiel EN PREMIER pour que Qualiobee l'identifie comme "première séance"
+    dates.push({ type: presenceType, startAt: fmt(withTimeParis(endDate, 9, 0)), endAt: fmt(withTimeParis(endDate, 12, 30)) })
+    dates.push({ type: presenceType, startAt: fmt(withTimeParis(endDate, 13, 30)), endAt: fmt(withTimeParis(endDate, 17, 0)) })
     const elearningEnd = new Date(endDate)
     elearningEnd.setDate(elearningEnd.getDate() - 1)
     const safeElearningEnd = elearningEnd >= startDate ? elearningEnd : new Date(startDate)
     dates.push({ type: 'elearning', startAt: fmt(withTimeParis(startDate, 9, 0)), endAt: fmt(withTimeParis(safeElearningEnd, 17, 0)), elearningHours: 10, remoteLink: ELEARNING_LINK, softwareName: 'Skool' })
-    dates.push({ type: presenceType, startAt: fmt(withTimeParis(endDate, 9, 0)), endAt: fmt(withTimeParis(endDate, 12, 30)) })
-    dates.push({ type: presenceType, startAt: fmt(withTimeParis(endDate, 13, 30)), endAt: fmt(withTimeParis(endDate, 17, 0)) })
     const suiviDay = new Date(endDate)
     suiviDay.setDate(suiviDay.getDate() + 1)
     dates.push({ type: 'remote', startAt: fmt(withTimeParis(suiviDay, 10, 0)), endAt: fmt(withTimeParis(suiviDay, 11, 0)) })
@@ -490,7 +491,7 @@ function buildSessionDates(
   }
 
   if (type === 'SEO') {
-    dates.push({ type: 'elearning', startAt: fmt(withTimeParis(startDate, 9, 0)), endAt: fmt(withTimeParis(endDate, 17, 0)), elearningHours: 7, remoteLink: ELEARNING_LINK, softwareName: 'Skool' })
+    // Séances distanciel EN PREMIER (lundi et jeudi) pour que Qualiobee identifie la première
     const cur = new Date(startDate)
     while (cur <= endDate) {
       const parisDay = new Date(cur.toLocaleString('en-US', { timeZone: 'Europe/Paris' })).getDay()
@@ -503,6 +504,7 @@ function buildSessionDates(
       }
       cur.setDate(cur.getDate() + 1)
     }
+    dates.push({ type: 'elearning', startAt: fmt(withTimeParis(startDate, 9, 0)), endAt: fmt(withTimeParis(endDate, 17, 0)), elearningHours: 7, remoteLink: ELEARNING_LINK, softwareName: 'Skool' })
   }
 
   return dates
