@@ -343,9 +343,12 @@ async function findOrCreateCustomer(
 
 async function findFormationByType(orgUuid: string, apiKey: string, type: string) {
   const keywords: Record<string, string[]> = {
-    IA: ['ia', 'intelligence artificielle'],
-    RS: ['rs', 'réseaux sociaux', 'reseaux sociaux', 'social'],
-    SEO: ['seo', 'référencement', 'referencement'],
+    IA:       ['intelligence artificielle générative', 'création de contenus rédactionnels'],
+    DEVIA:    ['rs7344', 'développer son activité avec l\'intelligence artificielle'],
+    RS:       ['activité commerciale par les réseaux sociaux'],
+    CM:       ['rs6452', 'community management'],
+    SEO:      ['rs6521', 'référencement naturel'],
+    LINKEDIN: ['linkedin'],
   }
   // Inclure les modules pour obtenir leurs UUIDs
   const res = await qb(`/api/${orgUuid}/formation?limit=100&relations[]=modules`, apiKey)
@@ -444,7 +447,7 @@ function buildSessionDates(
     softwareName?: string
   }> = []
 
-  if (type === 'IA') {
+  if (type === 'IA' || type === 'DEVIA') {
     // E-learning : startDate 9h → veille de endDate 17h (heure Paris)
     const elearningEnd = new Date(endDate)
     elearningEnd.setDate(elearningEnd.getDate() - 1)
@@ -455,7 +458,7 @@ function buildSessionDates(
     dates.push({ type: presenceType, startAt: fmt(withTimeParis(endDate, 13, 30)), endAt: fmt(withTimeParis(endDate, 17, 0)) })
   }
 
-  if (type === 'RS') {
+  if (type === 'RS' || type === 'CM') {
     const elearningEnd = new Date(endDate)
     elearningEnd.setDate(elearningEnd.getDate() - 1)
     const safeElearningEnd = elearningEnd >= startDate ? elearningEnd : new Date(startDate)
@@ -465,6 +468,13 @@ function buildSessionDates(
     const suiviDay = new Date(endDate)
     suiviDay.setDate(suiviDay.getDate() + 1)
     dates.push({ type: 'remote', startAt: fmt(withTimeParis(suiviDay, 10, 0)), endAt: fmt(withTimeParis(suiviDay, 11, 0)) })
+  }
+
+  if (type === 'LINKEDIN') {
+    // Présentiel sur startDate matin + après-midi, puis e-learning startDate→endDate
+    dates.push({ type: presenceType, startAt: fmt(withTimeParis(startDate, 9, 0)), endAt: fmt(withTimeParis(startDate, 12, 30)) })
+    dates.push({ type: presenceType, startAt: fmt(withTimeParis(startDate, 13, 30)), endAt: fmt(withTimeParis(startDate, 17, 0)) })
+    dates.push({ type: 'elearning', startAt: fmt(withTimeParis(startDate, 9, 0)), endAt: fmt(withTimeParis(endDate, 17, 0)), elearningHours: 1, remoteLink: ELEARNING_LINK, softwareName: 'Skool' })
   }
 
   if (type === 'SEO') {
@@ -490,8 +500,12 @@ function buildSessionDates(
 
 function detectFormationType(name: string): string {
   const n = name.toUpperCase()
-  if (/\bIA\b|INTELLIGENCE/.test(n)) return 'IA'
-  if (/\bRS\b|RÉSEAUX|RESEAUX|SOCIAL/.test(n)) return 'RS'
+  // Ordre important : les types composés doivent être testés avant les types simples
+  if (/DEV\s+ACTI\s+IA\b/.test(n)) return 'DEVIA'
+  if (/DEV\s+ACTI\s+CM\b|COMMUNITY\s+MANAG/.test(n)) return 'CM'
+  if (/LINKEDIN/.test(n)) return 'LINKEDIN'
+  if (/\bIA\b|INTELLIGENCE|MAITRIS/.test(n)) return 'IA'
+  if (/DEV\s+ACTI\b|\bRS\b|RÉSEAUX|RESEAUX|SOCIAL/.test(n)) return 'RS'
   if (/\bSEO\b|RÉFÉRENCEMENT|REFERENCEMENT/.test(n)) return 'SEO'
   throw new Error(`Type de formation non reconnu dans: "${name}"`)
 }
@@ -597,14 +611,13 @@ async function syncPage(
 
   function moduleForType(type: string): string[] {
     if (formationModules.length === 0) return []
-    let matched = formationModules.find((m) => {
+    const matched = formationModules.find((m) => {
       if (type === 'elearning') return m.name.includes('e-learning') || m.name.includes('elearning')
       if (type === 'remote') return m.name.includes('distanciel')
       if (type === 'presence') return m.name.includes('présentiel') || m.name.includes('presentiel')
       return false
     })
-    if (!matched) matched = formationModules[0]
-    return [matched.uuid]
+    return matched ? [matched.uuid] : []
   }
 
   // Créer les séances
