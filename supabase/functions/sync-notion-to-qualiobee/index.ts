@@ -584,13 +584,10 @@ async function syncPage(
     city: lieu || 'Paris',
   })
 
-  // Créer la session (sans le prix dans le nom)
-  const cleanName = sessionName.replace(/\s*[-–—]\s*\d[\d\s,.]*€?/g, '').trim()
-
   const session = await qb(`/api/${orgUuid}/session`, qbKey, 'POST', {
     formationUuid: formation.uuid,
     externalId: pageId,
-    name: cleanName,
+    name: formation.title,
     learnerUuids: [learner.uuid],
     isConventionDisabled: true,
     isConvocationDisabled: false,
