@@ -190,6 +190,11 @@ async function getSessionDocUUIDs(
   // 4. Probes convocation par session + learner
   if (conv.length === 0) {
     const convProbes: Array<[string, Record<string, string>]> = [
+      [`${QB_BASE}/api/${orgUuid}/session/${sessionUuid}/convocations`, bearerHeaders],
+      [`${QB_BASE}/api/${orgUuid}/session/${sessionUuid}/convocations`, apiKeyHeaders],
+      [`${QB_BASE}/api/${orgUuid}/session/${sessionUuid}/convocation`, bearerHeaders],
+      [`${QB_BASE}/api/${orgUuid}/session/${sessionUuid}/convocation`, apiKeyHeaders],
+      [`${QB_BASE}/api/session/${sessionUuid}/convocations`, bearerHeaders],
       [`${QB_BASE}/api/convocation?session=${sessionUuid}&limit=100`, bearerHeaders],
       [`${QB_BASE}/api/convocation?sessionUuid=${sessionUuid}&limit=100`, bearerHeaders],
       [`${QB_BASE}/api/${orgUuid}/convocation?session=${sessionUuid}&limit=100`, bearerHeaders],
@@ -336,20 +341,25 @@ async function findOrCreateCustomer(
 
 async function findFormationByType(orgUuid: string, apiKey: string, type: string) {
   const keywords: Record<string, string[]> = {
-    IA:       ['intelligence artificielle générative', 'création de contenus rédactionnels'],
-    DEVIA:    ['rs7344', 'développer son activité avec l\'intelligence artificielle'],
-    RS:       ['activité commerciale par les réseaux sociaux'],
+    IA:       ['intelligence artificielle generative', 'creation de contenus redactionnels', 'rs6776'],
+    DEVIA:    ['rs7344', 'developper son activite avec l\'intelligence artificielle'],
+    RS:       ['activite commerciale par les reseaux sociaux'],
     CM:       ['rs6452', 'community management'],
-    SEO:      ['rs6521', 'référencement naturel'],
+    SEO:      ['rs6521', 'referencement naturel'],
     LINKEDIN: ['linkedin'],
   }
+  // Strip diacritics by decomposing to NFD and removing combining characters (U+0300–U+036F)
+  const norm = (s: string) => s.normalize('NFD').split('').filter(c => {
+    const cp = c.codePointAt(0) ?? 0; return cp < 0x0300 || cp > 0x036F
+  }).join('').toLowerCase()
+
   // Inclure les modules pour obtenir leurs UUIDs
   const res = await qb(`/api/${orgUuid}/formation?limit=100&relations[]=modules`, apiKey)
   const formations: any[] = res.data ?? []
-  const kws = keywords[type] ?? [type.toLowerCase()]
+  const kws = keywords[type] ?? [norm(type)]
 
   const found = formations.find((f) =>
-    kws.some((kw) => f.title?.toLowerCase().includes(kw))
+    kws.some((kw) => norm(f.title ?? '').includes(kw))
   )
   if (!found) throw new Error(`Formation "${type}" introuvable dans Qualiobee. Titres disponibles: ${formations.map((f) => f.title).join(', ')}`)
   return found
@@ -643,7 +653,12 @@ async function syncPage(
     if (sd.remoteLink) body.remoteLink = sd.remoteLink
     if (sd.softwareName) body.remoteTool = sd.softwareName
     const moduleUuids = moduleForType(sd.type)
-    if (moduleUuids.length > 0) body.moduleUuids = moduleUuids
+    if (moduleUuids.length > 0) {
+      body.moduleUuids = moduleUuids
+    } else if (formationModules.length > 0) {
+      // API requires at least one moduleUuid — fallback to first available module
+      body.moduleUuids = [formationModules[0].uuid]
+    }
 
     await qb(`/api/${orgUuid}/session-date`, qbKey, 'POST', body)
   }
@@ -673,22 +688,28 @@ async function syncPage(
       const internalToken = await loginQualiobeeInternal(qbUsername, qbPassword)
       await supabase.from('qualiobee_sync_log').insert({
         notion_page_id: pageId, session_name: sessionName, qualiobee_session_uuid: session.uuid,
-        status: 'debug', error_message: 'CHECKPOINT-2: login-ok avant wait 15s',
+        status: 'debug', error_message: 'CHECKPOINT-2: login-ok avant wait 20s',
       })
-      // Attendre 15s que Qualiobee crée les documents convocation/attestation
-      await new Promise((r) => setTimeout(r, 15000))
+      // Attendre 20s que Qualiobee crée les documents convocation/attestation
+      await new Promise((r) => setTimeout(r, 20000))
       await supabase.from('qualiobee_sync_log').insert({
         notion_page_id: pageId, session_name: sessionName, qualiobee_session_uuid: session.uuid,
-        status: 'debug', error_message: 'CHECKPOINT-3: apres wait 15s',
+        status: 'debug', error_message: 'CHECKPOINT-3: apres wait 20s',
       })
-      const { conv } = await getSessionDocUUIDs(session.uuid, session, learner.uuid, internalToken, orgUuid, qbKey)
-      await supabase.from('qualiobee_sync_log').insert({
-        notion_page_id: pageId,
-        session_name: sessionName,
-        qualiobee_session_uuid: session.uuid,
-        status: 'debug',
-        error_message: `conv=${conv.join(',')||'none'}`,
-      })
+
+      // Retry jusqu'à 3 fois si les convocations ne sont pas encore disponibles
+      let conv: string[] = []
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        if (attempt > 1) await new Promise((r) => setTimeout(r, 10000))
+        const result = await getSessionDocUUIDs(session.uuid, session, learner.uuid, internalToken, orgUuid, qbKey)
+        conv = result.conv
+        await supabase.from('qualiobee_sync_log').insert({
+          notion_page_id: pageId, session_name: sessionName, qualiobee_session_uuid: session.uuid,
+          status: 'debug', error_message: `conv-attempt-${attempt}: ${conv.join(',') || 'none'}`,
+        })
+        if (conv.length > 0) break
+      }
+
       for (const uuid of conv) await patchDocTemplate(TMPL_CONVOCATION, uuid, internalToken, 'convocation')
       for (const uuid of conv) await patchDocTemplate(TMPL_CERTIFICAT, uuid, internalToken, 'attestation')
 
