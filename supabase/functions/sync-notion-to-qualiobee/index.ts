@@ -51,35 +51,9 @@ async function notionPatch(path: string, token: string, body: object) {
   return res.json()
 }
 
-async function fetchPagesToSync(token: string, dbId: string): Promise<NotionPage[]> {
-  const pages: NotionPage[] = []
-  let cursor: string | undefined = undefined
-
-  do {
-    const body: any = {
-      filter: {
-        and: [
-          { property: 'Automatisation', checkbox: { equals: true } },
-          { property: 'Ok dans Qualiobee ?', checkbox: { equals: false } },
-        ],
-      },
-      page_size: 100,
-    }
-    if (cursor) body.start_cursor = cursor
-
-    const data = await notionPost(`/databases/${dbId}/query`, token, body)
-    pages.push(...data.results)
-    cursor = data.has_more ? data.next_cursor : undefined
-  } while (cursor)
-
-  return pages
-}
-
-async function markPageSynced(pageId: string, token: string) {
-  // Décoche "Automatisation" pour éviter une re-sync au prochain passage du cron
-  // "Ok dans Qualiobee ?" est laissé à la main de l'utilisateur
+async function markSessionCreated(pageId: string, token: string) {
   await notionPatch(`/pages/${pageId}`, token, {
-    properties: { 'Automatisation': { checkbox: false } },
+    properties: { 'declencher': { checkbox: true } },
   })
 }
 
@@ -362,6 +336,15 @@ async function findFormationByType(orgUuid: string, apiKey: string, type: string
   return found
 }
 
+async function findExistingSession(orgUuid: string, apiKey: string, pageId: string) {
+  try {
+    const res = await qb(`/api/${orgUuid}/session?externalId=${encodeURIComponent(pageId)}&limit=1`, apiKey)
+    return res.data?.[0] ?? null
+  } catch {
+    return null
+  }
+}
+
 async function findOrCreateLocation(
   orgUuid: string,
   apiKey: string,
@@ -534,6 +517,13 @@ async function syncPage(
   if (!endDateStr) throw new Error('Date de fin manquante')
   if (clientIds.length === 0) throw new Error('Aucun client lié à la session')
 
+  // Idempotence : éviter les doublons si le webhook est appelé plusieurs fois
+  const existingSession = await findExistingSession(orgUuid, qbKey, pageId)
+  if (existingSession) {
+    console.log(`Session déjà existante pour page ${pageId}: ${existingSession.uuid} — skip`)
+    return { sessionUuid: existingSession.uuid, formationType: 'already-exists', clientName: '', sessionDatesCreated: 0 }
+  }
+
   const startDate = new Date(startDateStr)
   const endDate = new Date(endDateStr)
   const formationType = detectFormationType(sessionName)
@@ -639,8 +629,8 @@ async function syncPage(
     await qb(`/api/${orgUuid}/session-date`, qbKey, 'POST', body)
   }
 
-  // Décocher "Automatisation" en PREMIER pour éviter les doublons si la suite timeout
-  await markPageSynced(pageId, notionKey)
+  // Cocher "declencher" pour notifier l'utilisateur que la session a été créée
+  await markSessionCreated(pageId, notionKey)
 
   // Logger dans Supabase
   await supabase.from('qualiobee_sync_log').insert({
@@ -736,36 +726,61 @@ Deno.serve(async (req) => {
   const ORG_UUID = Deno.env.get('QUALIOBEE_ORG_UUID')!
   const QB_KEY = Deno.env.get('QUALIOBEE_API_KEY')!
   const NOTION_KEY = Deno.env.get('NOTION_API_KEY')!
-  const NOTION_DB = Deno.env.get('NOTION_DATABASE_ID')!
 
   const supabase = createClient(
     Deno.env.get('SUPABASE_URL')!,
     Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
   )
 
-  const pages = await fetchPagesToSync(NOTION_KEY, NOTION_DB)
+  // Notion button automation sends: { source: {...}, data: { object: "page", id: "...", ... } }
+  // ou directement { object: "page", id: "...", ... }
+  let body: any = null
+  try { body = await req.json() } catch { /* ignore */ }
 
-  const results: any[] = []
-  const errors: any[] = []
+  const pageData: NotionPage | null =
+    body?.data?.object === 'page' ? body.data :
+    body?.object === 'page' ? body :
+    null
 
-  for (const page of pages) {
-    try {
-      const result = await syncPage(page, ORG_UUID, QB_KEY, NOTION_KEY, supabase)
-      results.push({ pageId: page.id, ...result })
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      errors.push({ pageId: page.id, error: message })
-
-      await supabase.from('qualiobee_sync_log').insert({
-        notion_page_id: page.id,
-        status: 'error',
-        error_message: message,
-      })
-    }
+  if (!pageData?.id) {
+    return new Response(
+      JSON.stringify({ error: 'Payload invalide: aucune page Notion trouvée dans le body' }),
+      { status: 400, headers: { 'Content-Type': 'application/json' } }
+    )
   }
 
-  return new Response(
-    JSON.stringify({ processed: pages.length, success: results.length, errors: errors.length, results, errors }),
-    { headers: { 'Content-Type': 'application/json' } }
-  )
+  // Refetch la page complète depuis Notion pour avoir toutes les propriétés à jour
+  let page: NotionPage
+  try {
+    page = await fetch(`https://api.notion.com/v1/pages/${pageData.id}`, {
+      headers: { Authorization: `Bearer ${NOTION_KEY}`, 'Notion-Version': '2022-06-28' },
+    }).then(async (r) => {
+      if (!r.ok) throw new Error(`Notion GET page: ${r.status} ${await r.text()}`)
+      return r.json()
+    })
+  } catch (err) {
+    return new Response(
+      JSON.stringify({ error: `Impossible de récupérer la page Notion: ${err}` }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } }
+    )
+  }
+
+  try {
+    const result = await syncPage(page, ORG_UUID, QB_KEY, NOTION_KEY, supabase)
+    return new Response(
+      JSON.stringify({ success: true, pageId: page.id, ...result }),
+      { headers: { 'Content-Type': 'application/json' } }
+    )
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    await supabase.from('qualiobee_sync_log').insert({
+      notion_page_id: page.id,
+      status: 'error',
+      error_message: message,
+    })
+    return new Response(
+      JSON.stringify({ error: message }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } }
+    )
+  }
 })
