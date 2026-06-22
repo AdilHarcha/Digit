@@ -51,12 +51,15 @@ async function notionPatch(path: string, token: string, body: object) {
   return res.json()
 }
 
+async function claimPage(pageId: string, token: string) {
+  await notionPatch(`/pages/${pageId}`, token, {
+    properties: { 'Automatisation': { checkbox: false } },
+  })
+}
+
 async function markSessionCreated(pageId: string, token: string) {
   await notionPatch(`/pages/${pageId}`, token, {
-    properties: {
-      'Automatisation': { checkbox: false },
-      'declencher': { checkbox: true },
-    },
+    properties: { 'declencher': { checkbox: true } },
   })
 }
 
@@ -464,16 +467,16 @@ function buildSessionDates(
     // Présentiel EN PREMIER (Journee formation) pour que Qualiobee l'identifie comme "première séance"
     dates.push({ type: presenceType, startAt: fmt(withTimeParis(formationDate, 9, 0)), endAt: fmt(withTimeParis(formationDate, 12, 30)) })
     dates.push({ type: presenceType, startAt: fmt(withTimeParis(formationDate, 13, 30)), endAt: fmt(withTimeParis(formationDate, 17, 0)) })
-    // E-learning : Date de début 9h → Date de fin 17h
-    dates.push({ type: 'elearning', startAt: fmt(withTimeParis(startDate, 9, 0)), endAt: fmt(withTimeParis(endDate, 17, 0)), elearningHours: 14, remoteLink: ELEARNING_LINK, softwareName: 'Skool' })
+    // E-learning : Journee formation 9h → Date de fin 17h
+    dates.push({ type: 'elearning', startAt: fmt(withTimeParis(formationDate, 9, 0)), endAt: fmt(withTimeParis(endDate, 17, 0)), elearningHours: 14, remoteLink: ELEARNING_LINK, softwareName: 'Skool' })
   }
 
   if (type === 'RS' || type === 'CM') {
     // Présentiel EN PREMIER (Journee formation) pour que Qualiobee l'identifie comme "première séance"
     dates.push({ type: presenceType, startAt: fmt(withTimeParis(formationDate, 9, 0)), endAt: fmt(withTimeParis(formationDate, 12, 30)) })
     dates.push({ type: presenceType, startAt: fmt(withTimeParis(formationDate, 13, 30)), endAt: fmt(withTimeParis(formationDate, 17, 0)) })
-    // E-learning : Date de début 9h → Date de fin 17h
-    dates.push({ type: 'elearning', startAt: fmt(withTimeParis(startDate, 9, 0)), endAt: fmt(withTimeParis(endDate, 17, 0)), elearningHours: 10, remoteLink: ELEARNING_LINK, softwareName: 'Skool' })
+    // E-learning : Journee formation 9h → Date de fin 17h
+    dates.push({ type: 'elearning', startAt: fmt(withTimeParis(formationDate, 9, 0)), endAt: fmt(withTimeParis(endDate, 17, 0)), elearningHours: 10, remoteLink: ELEARNING_LINK, softwareName: 'Skool' })
     // Séance de suivi : lendemain de la Journee formation
     const suiviDay = new Date(formationDate)
     suiviDay.setDate(suiviDay.getDate() + 1)
@@ -484,8 +487,8 @@ function buildSessionDates(
     // Présentiel EN PREMIER sur Journee formation
     dates.push({ type: presenceType, startAt: fmt(withTimeParis(formationDate, 9, 0)), endAt: fmt(withTimeParis(formationDate, 12, 30)) })
     dates.push({ type: presenceType, startAt: fmt(withTimeParis(formationDate, 13, 30)), endAt: fmt(withTimeParis(formationDate, 17, 0)) })
-    // E-learning : Date de début 9h → Date de fin 17h
-    dates.push({ type: 'elearning', startAt: fmt(withTimeParis(startDate, 9, 0)), endAt: fmt(withTimeParis(endDate, 17, 0)), elearningHours: 1, remoteLink: ELEARNING_LINK, softwareName: 'Skool' })
+    // E-learning : Journee formation 9h → Date de fin 17h
+    dates.push({ type: 'elearning', startAt: fmt(withTimeParis(formationDate, 9, 0)), endAt: fmt(withTimeParis(endDate, 17, 0)), elearningHours: 1, remoteLink: ELEARNING_LINK, softwareName: 'Skool' })
   }
 
   if (type === 'SEO') {
@@ -555,6 +558,10 @@ async function syncPage(
     console.log(`Session déjà existante pour page ${pageId}: ${existingSession.uuid} — skip`)
     return { sessionUuid: existingSession.uuid, formationType: 'already-exists', clientName: '', sessionDatesCreated: 0 }
   }
+
+  // Décocher Automatisation immédiatement pour éviter qu'une autre invocation cron
+  // ne repasse sur cette page pendant les ~30s de traitement
+  await claimPage(pageId, notionKey)
 
   const startDate = new Date(startDateStr)
   const endDate = new Date(endDateStr)
