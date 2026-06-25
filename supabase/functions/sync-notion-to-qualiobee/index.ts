@@ -53,13 +53,13 @@ async function notionPatch(path: string, token: string, body: object) {
 
 async function claimPage(pageId: string, token: string) {
   await notionPatch(`/pages/${pageId}`, token, {
-    properties: { 'Automatisation': { checkbox: false } },
+    properties: { 'déclencheur': { checkbox: false } },
   })
 }
 
 async function markSessionCreated(pageId: string, token: string) {
   await notionPatch(`/pages/${pageId}`, token, {
-    properties: { 'declencher': { checkbox: true } },
+    properties: { 'déclencher': { checkbox: true } },
   })
 }
 
@@ -68,7 +68,7 @@ async function fetchPagesToSync(token: string, dbId: string): Promise<NotionPage
   let cursor: string | undefined = undefined
   do {
     const body: any = {
-      filter: { property: 'Automatisation', checkbox: { equals: true } },
+      filter: { property: 'déclencheur', checkbox: { equals: true } },
       page_size: 100,
     }
     if (cursor) body.start_cursor = cursor
@@ -556,14 +556,15 @@ async function syncPage(
   const montant = getNumber(page, 'Montant')
   // "Animé par" peut être select ou multi_select selon la config Notion
   const trainerName = getSelect(page, 'Animé par') || getMultiSelect(page, 'Animé par')[0] || ''
-  const lieu = getSelect(page, 'Lieu') || getText(page, 'Lieu') || ''
+  const lieu = getText(page, 'Lieu') || getSelect(page, 'Lieu') || ''
+  const ville = getSelect(page, 'Ville') || getText(page, 'Ville') || ''
   const clientIds = getRelationIds(page, 'Clients')
-
-  const formationDateStr = getDate(page, 'Journee formation')
+  // Supporte les deux noms de propriété (ancienne et nouvelle BDD)
+  const formationDateStr = getDate(page, 'Journée de formation') ?? getDate(page, 'Journee formation')
 
   if (!startDateStr) throw new Error('Date de début manquante')
   if (!endDateStr) throw new Error('Date de fin manquante')
-  if (!formationDateStr) throw new Error('Journee formation manquante')
+  if (!formationDateStr) throw new Error('Journée de formation manquante')
   if (clientIds.length === 0) throw new Error('Aucun client lié à la session')
 
   // Idempotence : éviter les doublons si le webhook est appelé plusieurs fois
@@ -625,7 +626,7 @@ async function syncPage(
   })
   const locationPhysique = await findOrCreateLocation(orgUuid, qbKey, {
     addressLine1: lieu || 'Digit Formations',
-    city: lieu || 'Paris',
+    city: ville || lieu || 'Paris',
   })
 
   let session: any
@@ -805,7 +806,7 @@ Deno.serve(async (req) => {
   const ORG_UUID = Deno.env.get('QUALIOBEE_ORG_UUID')!
   const QB_KEY = Deno.env.get('QUALIOBEE_API_KEY')!
   const NOTION_KEY = Deno.env.get('NOTION_API_KEY')!
-  const NOTION_DB = Deno.env.get('NOTION_DATABASE_ID')!
+  const NOTION_DB = (Deno.env.get('NOTION_DATABASE_ID_vraie') || Deno.env.get('NOTION_DATABASE_ID'))!
 
   const supabase = createClient(
     Deno.env.get('SUPABASE_URL')!,
