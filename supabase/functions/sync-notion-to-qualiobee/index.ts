@@ -315,15 +315,29 @@ async function findOrCreateLearner(
 
   const learnerType = params.isIndividual ? 'PARTICULIER' : 'SALARIE'
 
-  return qb(`/api/${orgUuid}/learner`, apiKey, 'POST', {
-    firstName: params.firstName,
-    lastName: params.lastName,
-    email: params.email,
-    phoneNumber: params.phoneNumber,
-    externalId: params.externalId,
-    customerUuid: params.customerUuid,
-    type: learnerType,
-  })
+  try {
+    return await qb(`/api/${orgUuid}/learner`, apiKey, 'POST', {
+      firstName: params.firstName,
+      lastName: params.lastName,
+      email: params.email,
+      phoneNumber: params.phoneNumber,
+      externalId: params.externalId,
+      customerUuid: params.customerUuid,
+      type: learnerType,
+    })
+  } catch (err) {
+    // 403/409 = déjà existant — re-chercher par email avant de planter
+    const msg = err instanceof Error ? err.message : String(err)
+    if (msg.includes('403') || msg.includes('409') || msg.includes('422')) {
+      if (params.email) {
+        const retry = await qb(`/api/${orgUuid}/learner?email=${encodeURIComponent(params.email)}&limit=1`, apiKey)
+        if (retry.data?.length > 0) return retry.data[0]
+      }
+      const retryExt = await qb(`/api/${orgUuid}/learner?externalId=${encodeURIComponent(params.externalId)}&limit=1`, apiKey)
+      if (retryExt.data?.length > 0) return retryExt.data[0]
+    }
+    throw err
+  }
 }
 
 async function findOrCreateCustomer(
@@ -614,20 +628,34 @@ async function syncPage(
     city: lieu || 'Paris',
   })
 
-  const session = await qb(`/api/${orgUuid}/session`, qbKey, 'POST', {
-    formationUuid: formation.uuid,
-    externalId: pageId,
-    name: formation.title,
-    learnerUuids: [learner.uuid],
-    isConventionDisabled: true,
-    isConvocationDisabled: false,
-    pricing: {
-      strategy: 'FOR_FORMATION',
-      precision: 'FIXED',
-      moneyValue: montant,
-      taxRate: 0,
-    },
-  })
+  let session: any
+  try {
+    session = await qb(`/api/${orgUuid}/session`, qbKey, 'POST', {
+      formationUuid: formation.uuid,
+      externalId: pageId,
+      name: formation.title,
+      learnerUuids: [learner.uuid],
+      isConventionDisabled: true,
+      isConvocationDisabled: false,
+      pricing: {
+        strategy: 'FOR_FORMATION',
+        precision: 'FIXED',
+        moneyValue: montant,
+        taxRate: 0,
+      },
+    })
+  } catch (err) {
+    // 500 peut indiquer un externalId déjà existant — re-chercher avant de planter
+    const msg = err instanceof Error ? err.message : String(err)
+    if (msg.includes('500') || msg.includes('409') || msg.includes('422')) {
+      const existing = await findExistingSession(orgUuid, qbKey, pageId)
+      if (existing) {
+        console.log(`session déjà existante (récupérée après erreur ${msg.slice(0, 30)}): ${existing.uuid}`)
+        return { sessionUuid: existing.uuid, formationType, clientName: `${firstName} ${lastName}`, sessionDatesCreated: 0 }
+      }
+    }
+    throw err
+  }
 
   console.log(`session créée: ${session.uuid} | keys: ${Object.keys(session).join(',')} | ${JSON.stringify(session).slice(0, 400)}`)
 
