@@ -51,10 +51,8 @@ async function notionPatch(path: string, token: string, body: object) {
   return res.json()
 }
 
-async function claimPage(pageId: string, token: string) {
-  await notionPatch(`/pages/${pageId}`, token, {
-    properties: { 'déclencheur': { checkbox: false } },
-  })
+async function claimPage(_pageId: string, _token: string) {
+  // déclencheur est un bouton Notion — pas d'état à réinitialiser via API
 }
 
 async function markSessionCreated(pageId: string, token: string) {
@@ -813,35 +811,63 @@ Deno.serve(async (req) => {
     Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
   )
 
-  // Mode batch (cron) : cherche toutes les pages avec Automatisation = true
-  const pages = await fetchPagesToSync(NOTION_KEY, NOTION_DB)
-
-  if (pages.length === 0) {
-    return new Response(JSON.stringify({ processed: 0, success: 0, errors: 0 }), {
-      headers: { 'Content-Type': 'application/json' },
-    })
+  // Détecter si c'est un webhook Notion (bouton) ou un appel cron
+  let webhookPageId: string | null = null
+  try {
+    const body = await req.json()
+    // Notion envoie l'id de la page dans data.id ou directement dans id
+    webhookPageId = body?.data?.id ?? body?.page?.id ?? body?.id ?? null
+    if (webhookPageId) console.log(`Webhook bouton reçu pour page: ${webhookPageId}`)
+  } catch {
+    // Body vide ou non-JSON (appel cron) — ignoré
   }
 
   const results: any[] = []
   const errors: any[] = []
 
-  for (const page of pages) {
+  if (webhookPageId) {
+    // Mode webhook : traiter uniquement la page déclenchée par le bouton
     try {
+      const page: NotionPage = await notionGet(`/pages/${webhookPageId}`, NOTION_KEY)
       const result = await syncPage(page, ORG_UUID, QB_KEY, NOTION_KEY, supabase)
-      results.push({ pageId: page.id, ...result })
+      results.push({ pageId: webhookPageId, ...result })
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      errors.push({ pageId: page.id, error: message })
+      errors.push({ pageId: webhookPageId, error: message })
       await supabase.from('qualiobee_sync_log').insert({
-        notion_page_id: page.id,
+        notion_page_id: webhookPageId,
         status: 'error',
         error_message: message,
       })
     }
+  } else {
+    // Mode batch (cron) : cherche toutes les pages avec déclencheur = true
+    const pages = await fetchPagesToSync(NOTION_KEY, NOTION_DB)
+
+    if (pages.length === 0) {
+      return new Response(JSON.stringify({ processed: 0, success: 0, errors: 0 }), {
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+
+    for (const page of pages) {
+      try {
+        const result = await syncPage(page, ORG_UUID, QB_KEY, NOTION_KEY, supabase)
+        results.push({ pageId: page.id, ...result })
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        errors.push({ pageId: page.id, error: message })
+        await supabase.from('qualiobee_sync_log').insert({
+          notion_page_id: page.id,
+          status: 'error',
+          error_message: message,
+        })
+      }
+    }
   }
 
   return new Response(
-    JSON.stringify({ processed: pages.length, success: results.length, errors: errors.length, results, errors }),
+    JSON.stringify({ processed: results.length + errors.length, success: results.length, errors: errors.length, results, errors }),
     { headers: { 'Content-Type': 'application/json' } }
   )
 })
