@@ -80,6 +80,15 @@ async function fetchPagesToSync(token: string, dbId: string): Promise<NotionPage
 // Property extractors
 const getTitle = (p: NotionPage, k: string) =>
   p.properties[k]?.title?.map((t: any) => t.plain_text).join('') ?? ''
+const getTitleAny = (p: NotionPage) => {
+  for (const val of Object.values(p.properties)) {
+    if (val?.type === 'title' && Array.isArray(val.title)) {
+      const text = val.title.map((t: any) => t.plain_text).join('')
+      if (text) return text
+    }
+  }
+  return ''
+}
 const getText = (p: NotionPage, k: string) =>
   p.properties[k]?.rich_text?.map((t: any) => t.plain_text).join('') ?? ''
 const getDate = (p: NotionPage, k: string): string | null =>
