@@ -8,7 +8,7 @@ SELECT cron.schedule(
   '* * * * *',
   $$
   SELECT net.http_post(
-    url     := 'https://ehorpbaktpkciwpigevg.supabase.co/functions/v1/sync-notion-to-qualiobee',
+    url     := 'https://zrtumwsobyzfpronucwm.supabase.co/functions/v1/sync-notion-to-qualiobee',
     headers := '{"Content-Type": "application/json"}'::jsonb,
     body    := '{}'::jsonb
   )
