@@ -61,20 +61,11 @@ async function markSessionCreated(pageId: string, token: string) {
   })
 }
 
-async function fetchPagesToSync(token: string, dbId: string): Promise<NotionPage[]> {
-  const pages: NotionPage[] = []
-  let cursor: string | undefined = undefined
-  do {
-    const body: any = {
-      filter: { property: 'déclencheur', checkbox: { equals: true } },
-      page_size: 100,
-    }
-    if (cursor) body.start_cursor = cursor
-    const data = await notionPost(`/databases/${dbId}/query`, token, body)
-    pages.push(...data.results)
-    cursor = data.has_more ? data.next_cursor : undefined
-  } while (cursor)
-  return pages
+async function fetchPagesToSync(_token: string, _dbId: string): Promise<NotionPage[]> {
+  // déclencheur est un bouton Notion — pas de filtre possible via API
+  // Le cron ne peut pas détecter les pages à traiter sans état persistant
+  // Utiliser uniquement le webhook bouton pour déclencher la sync
+  return []
 }
 
 // Property extractors
