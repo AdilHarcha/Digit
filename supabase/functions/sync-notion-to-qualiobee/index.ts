@@ -120,12 +120,10 @@ async function getSessionDocUUIDs(
   sessionUuid: string,
   sessionObject: any,
   learnerUuid: string,
-  internalToken: string,
+  token: string,
   orgUuid: string,
-  apiKey: string,
 ): Promise<{ conv: string[] }> {
-  const bearerHeaders = { Authorization: `Bearer ${internalToken}` }
-  const apiKeyHeaders = { 'x-api-key': apiKey, 'Content-Type': 'application/json' }
+  const bearerHeaders = { Authorization: `Bearer ${token}` }
 
   // ── CONVOCATION : plusieurs approches en cascade ───────────────
   let conv: string[] = []
@@ -141,26 +139,26 @@ async function getSessionDocUUIDs(
     conv = convFromObj
   }
 
-  // 2. API publique session avec relations
+  // 2. API session avec Bearer + relations
   if (conv.length === 0) {
     try {
       const res = await fetch(
         `${QB_BASE}/api/${orgUuid}/session/${sessionUuid}?relations[]=convocations&relations[]=attestations`,
-        { headers: apiKeyHeaders },
+        { headers: bearerHeaders },
       )
       const text = await res.text()
-      console.log(`session public API relations: ${res.status} | ${text.slice(0, 600)}`)
+      console.log(`session Bearer relations: ${res.status} | ${text.slice(0, 600)}`)
       if (res.ok) {
         const data = JSON.parse(text)
         const c = (data.convocations ?? []).map((x: any) => x.uuid).filter(Boolean)
-        if (c.length > 0) { console.log(`conv depuis public API: ${c.join(',')}`); conv = c }
+        if (c.length > 0) { console.log(`conv depuis Bearer relations: ${c.join(',')}`); conv = c }
       }
     } catch (err) {
-      console.warn('session public API relations error:', err)
+      console.warn('session Bearer relations error:', err)
     }
   }
 
-  // 3. API interne session avec Bearer
+  // 3. API interne session avec Bearer (sans orgUuid)
   if (conv.length === 0) {
     try {
       const res = await fetch(
@@ -181,26 +179,22 @@ async function getSessionDocUUIDs(
 
   // 4. Probes convocation par session + learner
   if (conv.length === 0) {
-    const convProbes: Array<[string, Record<string, string>]> = [
-      [`${QB_BASE}/api/${orgUuid}/session/${sessionUuid}/convocations`, bearerHeaders],
-      [`${QB_BASE}/api/${orgUuid}/session/${sessionUuid}/convocations`, apiKeyHeaders],
-      [`${QB_BASE}/api/${orgUuid}/session/${sessionUuid}/convocation`, bearerHeaders],
-      [`${QB_BASE}/api/${orgUuid}/session/${sessionUuid}/convocation`, apiKeyHeaders],
-      [`${QB_BASE}/api/session/${sessionUuid}/convocations`, bearerHeaders],
-      [`${QB_BASE}/api/convocation?session=${sessionUuid}&limit=100`, bearerHeaders],
-      [`${QB_BASE}/api/convocation?sessionUuid=${sessionUuid}&limit=100`, bearerHeaders],
-      [`${QB_BASE}/api/${orgUuid}/convocation?session=${sessionUuid}&limit=100`, bearerHeaders],
-      [`${QB_BASE}/api/${orgUuid}/convocation?session=${sessionUuid}&limit=100`, apiKeyHeaders],
-      [`${QB_BASE}/api/${orgUuid}/convocation?sessionUuid=${sessionUuid}&limit=100`, bearerHeaders],
-      [`${QB_BASE}/api/${orgUuid}/convocation?sessionUuid=${sessionUuid}&limit=100`, apiKeyHeaders],
+    const convProbes: string[] = [
+      `${QB_BASE}/api/${orgUuid}/session/${sessionUuid}/convocations`,
+      `${QB_BASE}/api/${orgUuid}/session/${sessionUuid}/convocation`,
+      `${QB_BASE}/api/session/${sessionUuid}/convocations`,
+      `${QB_BASE}/api/convocation?session=${sessionUuid}&limit=100`,
+      `${QB_BASE}/api/convocation?sessionUuid=${sessionUuid}&limit=100`,
+      `${QB_BASE}/api/${orgUuid}/convocation?session=${sessionUuid}&limit=100`,
+      `${QB_BASE}/api/${orgUuid}/convocation?sessionUuid=${sessionUuid}&limit=100`,
       ...(learnerUuid ? [
-        [`${QB_BASE}/api/convocation?learner=${learnerUuid}&limit=100`, bearerHeaders] as [string, Record<string, string>],
-        [`${QB_BASE}/api/${orgUuid}/convocation?learner=${learnerUuid}&limit=100`, apiKeyHeaders] as [string, Record<string, string>],
-        [`${QB_BASE}/api/convocation?learnerUuid=${learnerUuid}&limit=100`, bearerHeaders] as [string, Record<string, string>],
+        `${QB_BASE}/api/convocation?learner=${learnerUuid}&limit=100`,
+        `${QB_BASE}/api/${orgUuid}/convocation?learner=${learnerUuid}&limit=100`,
+        `${QB_BASE}/api/convocation?learnerUuid=${learnerUuid}&limit=100`,
       ] : []),
     ]
-    for (const [url, hdrs] of convProbes) {
-      const uuids = await probeEndpoint(url, hdrs)
+    for (const url of convProbes) {
+      const uuids = await probeEndpoint(url, bearerHeaders)
       if (uuids.length > 0) { conv = uuids; break }
     }
   }
@@ -255,12 +249,11 @@ async function assignDocumentTemplates(
   learnerUuid: string,
   token: string,
   orgUuid: string,
-  apiKey: string,
 ): Promise<void> {
   // Attendre 5s que Qualiobee crée les enregistrements convocation/attestation
   await new Promise((r) => setTimeout(r, 5000))
 
-  const { conv } = await getSessionDocUUIDs(sessionUuid, sessionObject, learnerUuid, token, orgUuid, apiKey)
+  const { conv } = await getSessionDocUUIDs(sessionUuid, sessionObject, learnerUuid, token, orgUuid)
 
   console.log(`session ${sessionUuid}: ${conv.length} convocation(s)`)
 
@@ -276,10 +269,10 @@ async function assignDocumentTemplates(
 
 // ─── Qualiobee helpers ─────────────────────────────────────────
 
-async function qb(path: string, apiKey: string, method = 'GET', body?: object) {
+async function qb(path: string, token: string, method = 'GET', body?: object) {
   const res = await fetch(`${QB_BASE}${path}`, {
     method,
-    headers: { 'x-api-key': apiKey, 'Content-Type': 'application/json' },
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: body ? JSON.stringify(body) : undefined,
   })
   if (!res.ok) {
@@ -291,21 +284,21 @@ async function qb(path: string, apiKey: string, method = 'GET', body?: object) {
 
 async function findOrCreateLearner(
   orgUuid: string,
-  apiKey: string,
+  token: string,
   params: { firstName: string; lastName: string; email: string; phoneNumber: string; externalId: string; customerUuid: string; isIndividual: boolean }
 ) {
-  const byExtId = await qb(`/api/${orgUuid}/learner?externalId=${encodeURIComponent(params.externalId)}&limit=1`, apiKey)
+  const byExtId = await qb(`/api/${orgUuid}/learner?externalId=${encodeURIComponent(params.externalId)}&limit=1`, token)
   if (byExtId.data?.length > 0) return byExtId.data[0]
 
   if (params.email) {
-    const byEmail = await qb(`/api/${orgUuid}/learner?email=${encodeURIComponent(params.email)}&limit=1`, apiKey)
+    const byEmail = await qb(`/api/${orgUuid}/learner?email=${encodeURIComponent(params.email)}&limit=1`, token)
     if (byEmail.data?.length > 0) return byEmail.data[0]
   }
 
   const learnerType = params.isIndividual ? 'PARTICULIER' : 'SALARIE'
 
   try {
-    return await qb(`/api/${orgUuid}/learner`, apiKey, 'POST', {
+    return await qb(`/api/${orgUuid}/learner`, token, 'POST', {
       firstName: params.firstName,
       lastName: params.lastName,
       email: params.email,
@@ -319,10 +312,10 @@ async function findOrCreateLearner(
     const msg = err instanceof Error ? err.message : String(err)
     if (msg.includes('403') || msg.includes('409') || msg.includes('422')) {
       if (params.email) {
-        const retry = await qb(`/api/${orgUuid}/learner?email=${encodeURIComponent(params.email)}&limit=1`, apiKey)
+        const retry = await qb(`/api/${orgUuid}/learner?email=${encodeURIComponent(params.email)}&limit=1`, token)
         if (retry.data?.length > 0) return retry.data[0]
       }
-      const retryExt = await qb(`/api/${orgUuid}/learner?externalId=${encodeURIComponent(params.externalId)}&limit=1`, apiKey)
+      const retryExt = await qb(`/api/${orgUuid}/learner?externalId=${encodeURIComponent(params.externalId)}&limit=1`, token)
       if (retryExt.data?.length > 0) return retryExt.data[0]
     }
     throw err
@@ -331,21 +324,21 @@ async function findOrCreateLearner(
 
 async function findOrCreateCustomer(
   orgUuid: string,
-  apiKey: string,
+  token: string,
   params: { firstName: string; lastName: string; email: string; isIndividual: boolean; externalId: string }
 ) {
-  const byExtId = await qb(`/api/${orgUuid}/customer?externalId=${encodeURIComponent(params.externalId)}&limit=1`, apiKey)
+  const byExtId = await qb(`/api/${orgUuid}/customer?externalId=${encodeURIComponent(params.externalId)}&limit=1`, token)
   if (byExtId.data?.length > 0) return byExtId.data[0]
 
   if (params.email) {
-    const byEmail = await qb(`/api/${orgUuid}/customer?email=${encodeURIComponent(params.email)}&limit=1`, apiKey)
+    const byEmail = await qb(`/api/${orgUuid}/customer?email=${encodeURIComponent(params.email)}&limit=1`, token)
     if (byEmail.data?.length > 0) return byEmail.data[0]
   }
 
-  return qb(`/api/${orgUuid}/customer`, apiKey, 'POST', params)
+  return qb(`/api/${orgUuid}/customer`, token, 'POST', params)
 }
 
-async function findFormationByType(orgUuid: string, apiKey: string, type: string) {
+async function findFormationByType(orgUuid: string, token: string, type: string) {
   const keywords: Record<string, string[]> = {
     IA:       ['intelligence artificielle generative', 'creation de contenus redactionnels', 'rs6776'],
     DEVIA:    ['rs7344', 'developper son activite avec l\'intelligence artificielle'],
@@ -360,7 +353,7 @@ async function findFormationByType(orgUuid: string, apiKey: string, type: string
   }).join('').toLowerCase()
 
   // Inclure les modules pour obtenir leurs UUIDs
-  const res = await qb(`/api/${orgUuid}/formation?limit=100&relations[]=modules`, apiKey)
+  const res = await qb(`/api/${orgUuid}/formation?limit=100&relations[]=modules`, token)
   const formations: any[] = res.data ?? []
   const kws = keywords[type] ?? [norm(type)]
 
@@ -371,9 +364,9 @@ async function findFormationByType(orgUuid: string, apiKey: string, type: string
   return found
 }
 
-async function findExistingSession(orgUuid: string, apiKey: string, pageId: string) {
+async function findExistingSession(orgUuid: string, token: string, pageId: string) {
   try {
-    const res = await qb(`/api/${orgUuid}/session?externalId=${encodeURIComponent(pageId)}&limit=1`, apiKey)
+    const res = await qb(`/api/${orgUuid}/session?externalId=${encodeURIComponent(pageId)}&limit=1`, token)
     return res.data?.[0] ?? null
   } catch {
     return null
@@ -382,10 +375,10 @@ async function findExistingSession(orgUuid: string, apiKey: string, pageId: stri
 
 async function findOrCreateLocation(
   orgUuid: string,
-  apiKey: string,
+  token: string,
   params: { addressLine1: string; city: string }
 ) {
-  const res = await qb(`/api/${orgUuid}/location?limit=100`, apiKey)
+  const res = await qb(`/api/${orgUuid}/location?limit=100`, token)
   const locations: any[] = res.data ?? []
   const found = locations.find(
     (l) =>
@@ -393,15 +386,15 @@ async function findOrCreateLocation(
       l.addressLine1?.toLowerCase() === params.addressLine1.toLowerCase()
   )
   if (found) return found
-  return qb(`/api/${orgUuid}/location`, apiKey, 'POST', {
+  return qb(`/api/${orgUuid}/location`, token, 'POST', {
     addressLine1: params.addressLine1,
     city: params.city,
     country: 'France',
   })
 }
 
-async function findOrCreateTrainer(orgUuid: string, apiKey: string, name: string) {
-  const res = await qb(`/api/${orgUuid}/trainer?limit=100`, apiKey)
+async function findOrCreateTrainer(orgUuid: string, token: string, name: string) {
+  const res = await qb(`/api/${orgUuid}/trainer?limit=100`, token)
   const trainers: any[] = res.data ?? []
   const found = trainers.find(
     (t) =>
@@ -415,7 +408,7 @@ async function findOrCreateTrainer(orgUuid: string, apiKey: string, name: string
   const lastName = parts[parts.length - 1]
   const firstName = parts.length > 1 ? parts.slice(0, -1).join(' ') : lastName
   const slug = name.toLowerCase().replace(/\s+/g, '-')
-  return qb(`/api/${orgUuid}/trainer`, apiKey, 'POST', {
+  return qb(`/api/${orgUuid}/trainer`, token, 'POST', {
     firstName,
     lastName,
     email: `${slug}@digit-formations.fr`,
@@ -533,7 +526,8 @@ function detectFormationType(name: string): string {
 async function syncPage(
   page: NotionPage,
   orgUuid: string,
-  qbKey: string,
+  qbUsername: string,
+  qbPassword: string,
   notionKey: string,
   supabase: ReturnType<typeof createClient>
 ) {
@@ -556,8 +550,11 @@ async function syncPage(
   if (!formationDateStr) throw new Error('Journée de formation manquante')
   if (clientIds.length === 0) throw new Error('Aucun client lié à la session')
 
+  // Login Qualiobee — un seul token réutilisé pour tous les appels
+  const qbToken = await loginQualiobeeInternal(qbUsername, qbPassword)
+
   // Idempotence : éviter les doublons si le webhook est appelé plusieurs fois
-  const existingSession = await findExistingSession(orgUuid, qbKey, pageId)
+  const existingSession = await findExistingSession(orgUuid, qbToken, pageId)
   if (existingSession) {
     console.log(`Session déjà existante pour page ${pageId}: ${existingSession.uuid} — skip`)
     return { sessionUuid: existingSession.uuid, formationType: 'already-exists', clientName: '', sessionDatesCreated: 0 }
@@ -582,10 +579,10 @@ async function syncPage(
   const isIndividual = clientType !== 'Professionnel'
 
   // Trouver la formation dans Qualiobee
-  const formation = await findFormationByType(orgUuid, qbKey, formationType)
+  const formation = await findFormationByType(orgUuid, qbToken, formationType)
 
   // Créer ou retrouver customer EN PREMIER (requis pour créer le learner)
-  const customer = await findOrCreateCustomer(orgUuid, qbKey, {
+  const customer = await findOrCreateCustomer(orgUuid, qbToken, {
     firstName,
     lastName,
     email,
@@ -594,7 +591,7 @@ async function syncPage(
   })
 
   // Créer ou retrouver learner avec le customerUuid
-  const learner = await findOrCreateLearner(orgUuid, qbKey, {
+  const learner = await findOrCreateLearner(orgUuid, qbToken, {
     firstName,
     lastName,
     email,
@@ -606,21 +603,21 @@ async function syncPage(
 
   // Trouver ou créer le formateur (obligatoire pour les séances)
   if (!trainerName) throw new Error('Champ "Animé par" vide — un formateur est requis')
-  const trainer = await findOrCreateTrainer(orgUuid, qbKey, trainerName)
+  const trainer = await findOrCreateTrainer(orgUuid, qbToken, trainerName)
 
   // Locations : distanciel pour e-learning/remote, physique pour présentiel
-  const locationDistanciel = await findOrCreateLocation(orgUuid, qbKey, {
+  const locationDistanciel = await findOrCreateLocation(orgUuid, qbToken, {
     addressLine1: 'Distanciel',
     city: 'Distanciel',
   })
-  const locationPhysique = await findOrCreateLocation(orgUuid, qbKey, {
+  const locationPhysique = await findOrCreateLocation(orgUuid, qbToken, {
     addressLine1: lieu || 'Digit Formations',
     city: ville || lieu || 'Paris',
   })
 
   let session: any
   try {
-    session = await qb(`/api/${orgUuid}/session`, qbKey, 'POST', {
+    session = await qb(`/api/${orgUuid}/session`, qbToken, 'POST', {
       formationUuid: formation.uuid,
       externalId: pageId,
       name: formation.title,
@@ -638,7 +635,7 @@ async function syncPage(
     // 500 peut indiquer un externalId déjà existant — re-chercher avant de planter
     const msg = err instanceof Error ? err.message : String(err)
     if (msg.includes('500') || msg.includes('409') || msg.includes('422')) {
-      const existing = await findExistingSession(orgUuid, qbKey, pageId)
+      const existing = await findExistingSession(orgUuid, qbToken, pageId)
       if (existing) {
         console.log(`session déjà existante (récupérée après erreur ${msg.slice(0, 30)}): ${existing.uuid}`)
         return { sessionUuid: existing.uuid, formationType, clientName: `${firstName} ${lastName}`, sessionDatesCreated: 0 }
@@ -689,7 +686,7 @@ async function syncPage(
       body.moduleUuids = [formationModules[0].uuid]
     }
 
-    await qb(`/api/${orgUuid}/session-date`, qbKey, 'POST', body)
+    await qb(`/api/${orgUuid}/session-date`, qbToken, 'POST', body)
   }
 
   // Cocher "declencher" pour notifier l'utilisateur que la session a été créée
@@ -705,75 +702,58 @@ async function syncPage(
     status: 'success',
   })
 
-  // Assigner les modèles de documents via l'API interne Qualiobee
-  const qbUsername = Deno.env.get('QUALIOBEE_USERNAME')
-  const qbPassword = Deno.env.get('QUALIOBEE_PASSWORD')
-  if (qbUsername && qbPassword) {
-    await supabase.from('qualiobee_sync_log').insert({
-      notion_page_id: pageId, session_name: sessionName, qualiobee_session_uuid: session.uuid,
-      status: 'debug', error_message: 'CHECKPOINT-1: entree bloc credentials',
-    })
-    try {
-      const internalToken = await loginQualiobeeInternal(qbUsername, qbPassword)
+  // Assigner les modèles de documents (réutilise le même token Bearer)
+  await supabase.from('qualiobee_sync_log').insert({
+    notion_page_id: pageId, session_name: sessionName, qualiobee_session_uuid: session.uuid,
+    status: 'debug', error_message: 'CHECKPOINT-2: session créée, avant wait 20s',
+  })
+  // Attendre 20s que Qualiobee crée les documents convocation/attestation
+  await new Promise((r) => setTimeout(r, 20000))
+  await supabase.from('qualiobee_sync_log').insert({
+    notion_page_id: pageId, session_name: sessionName, qualiobee_session_uuid: session.uuid,
+    status: 'debug', error_message: 'CHECKPOINT-3: apres wait 20s',
+  })
+
+  try {
+    // Retry jusqu'à 3 fois si les convocations ne sont pas encore disponibles
+    let conv: string[] = []
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      if (attempt > 1) await new Promise((r) => setTimeout(r, 10000))
+      const result = await getSessionDocUUIDs(session.uuid, session, learner.uuid, qbToken, orgUuid)
+      conv = result.conv
       await supabase.from('qualiobee_sync_log').insert({
         notion_page_id: pageId, session_name: sessionName, qualiobee_session_uuid: session.uuid,
-        status: 'debug', error_message: 'CHECKPOINT-2: login-ok avant wait 20s',
+        status: 'debug', error_message: `conv-attempt-${attempt}: ${conv.join(',') || 'none'}`,
       })
-      // Attendre 20s que Qualiobee crée les documents convocation/attestation
-      await new Promise((r) => setTimeout(r, 20000))
+      if (conv.length > 0) break
+    }
+
+    for (const uuid of conv) await patchDocTemplate(TMPL_CONVOCATION, uuid, qbToken, 'convocation')
+    for (const uuid of conv) await patchDocTemplate(TMPL_CERTIFICAT, uuid, qbToken, 'attestation')
+
+    // Activer la subrogation automatiquement
+    const pricingUuid = session.pricing?.uuid
+    if (pricingUuid) {
+      await enableSubrogation(pricingUuid, qbToken)
       await supabase.from('qualiobee_sync_log').insert({
         notion_page_id: pageId, session_name: sessionName, qualiobee_session_uuid: session.uuid,
-        status: 'debug', error_message: 'CHECKPOINT-3: apres wait 20s',
+        status: 'debug', error_message: `subrogation-ok: pricing=${pricingUuid}`,
       })
-
-      // Retry jusqu'à 3 fois si les convocations ne sont pas encore disponibles
-      let conv: string[] = []
-      for (let attempt = 1; attempt <= 3; attempt++) {
-        if (attempt > 1) await new Promise((r) => setTimeout(r, 10000))
-        const result = await getSessionDocUUIDs(session.uuid, session, learner.uuid, internalToken, orgUuid, qbKey)
-        conv = result.conv
-        await supabase.from('qualiobee_sync_log').insert({
-          notion_page_id: pageId, session_name: sessionName, qualiobee_session_uuid: session.uuid,
-          status: 'debug', error_message: `conv-attempt-${attempt}: ${conv.join(',') || 'none'}`,
-        })
-        if (conv.length > 0) break
-      }
-
-      for (const uuid of conv) await patchDocTemplate(TMPL_CONVOCATION, uuid, internalToken, 'convocation')
-      for (const uuid of conv) await patchDocTemplate(TMPL_CERTIFICAT, uuid, internalToken, 'attestation')
-
-      // Activer la subrogation automatiquement
-      const pricingUuid = session.pricing?.uuid
-      if (pricingUuid) {
-        await enableSubrogation(pricingUuid, internalToken)
-        await supabase.from('qualiobee_sync_log').insert({
-          notion_page_id: pageId, session_name: sessionName, qualiobee_session_uuid: session.uuid,
-          status: 'debug', error_message: `subrogation-ok: pricing=${pricingUuid}`,
-        })
-      } else {
-        console.warn(`pricing UUID non trouvé dans session ${session.uuid}. Keys: ${Object.keys(session).join(',')}`)
-        await supabase.from('qualiobee_sync_log').insert({
-          notion_page_id: pageId, session_name: sessionName, qualiobee_session_uuid: session.uuid,
-          status: 'debug', error_message: `subrogation-skip: no pricingUuid (session keys: ${Object.keys(session).join(',')})`,
-        })
-      }
-    } catch (err) {
-      console.warn('Assignation modèles échouée (non bloquant):', err)
+    } else {
+      console.warn(`pricing UUID non trouvé dans session ${session.uuid}. Keys: ${Object.keys(session).join(',')}`)
       await supabase.from('qualiobee_sync_log').insert({
-        notion_page_id: pageId,
-        session_name: sessionName,
-        qualiobee_session_uuid: session.uuid,
-        status: 'debug',
-        error_message: `template-error: ${err instanceof Error ? err.message : String(err)}`,
+        notion_page_id: pageId, session_name: sessionName, qualiobee_session_uuid: session.uuid,
+        status: 'debug', error_message: `subrogation-skip: no pricingUuid (session keys: ${Object.keys(session).join(',')})`,
       })
     }
-  } else {
+  } catch (err) {
+    console.warn('Assignation modèles échouée (non bloquant):', err)
     await supabase.from('qualiobee_sync_log').insert({
       notion_page_id: pageId,
       session_name: sessionName,
       qualiobee_session_uuid: session.uuid,
       status: 'debug',
-      error_message: 'QUALIOBEE_USERNAME ou QUALIOBEE_PASSWORD non definis dans les secrets Supabase',
+      error_message: `template-error: ${err instanceof Error ? err.message : String(err)}`,
     })
   }
 
@@ -793,7 +773,8 @@ Deno.serve(async (req) => {
   }
 
   const ORG_UUID = Deno.env.get('QUALIOBEE_ORG_UUID')!
-  const QB_KEY = Deno.env.get('QUALIOBEE_API_KEY')!
+  const QB_USERNAME = Deno.env.get('QUALIOBEE_USERNAME')!
+  const QB_PASSWORD = Deno.env.get('QUALIOBEE_PASSWORD')!
   const NOTION_KEY = Deno.env.get('NOTION_API_KEY')!
   const NOTION_DB = (Deno.env.get('NOTION_DATABASE_ID_vraie') || Deno.env.get('NOTION_DATABASE_ID'))!
 
@@ -820,7 +801,7 @@ Deno.serve(async (req) => {
     // Mode webhook : traiter uniquement la page déclenchée par le bouton
     try {
       const page: NotionPage = await notionGet(`/pages/${webhookPageId}`, NOTION_KEY)
-      const result = await syncPage(page, ORG_UUID, QB_KEY, NOTION_KEY, supabase)
+      const result = await syncPage(page, ORG_UUID, QB_USERNAME, QB_PASSWORD, NOTION_KEY, supabase)
       results.push({ pageId: webhookPageId, ...result })
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
@@ -843,7 +824,7 @@ Deno.serve(async (req) => {
 
     for (const page of pages) {
       try {
-        const result = await syncPage(page, ORG_UUID, QB_KEY, NOTION_KEY, supabase)
+        const result = await syncPage(page, ORG_UUID, QB_USERNAME, QB_PASSWORD, NOTION_KEY, supabase)
         results.push({ pageId: page.id, ...result })
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
